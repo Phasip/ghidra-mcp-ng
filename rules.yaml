@@ -1,0 +1,68 @@
+# ghidra-mcp-ng naming rules configuration
+#
+# Rules are enforced on all write operations that set names (functions, variables,
+# struct fields, struct names). Each rule has:
+#   pattern:  Java regex that the new name MUST fully match
+#   message:  Error message shown to the agent when the rule is violated
+#
+# This file implements the naming conventions from REVERSING.md:
+#   guess_<name>      — quick name without investigation
+#   maybe_<name>      — strong reversing evidence (most common)
+#   likely_<name>     — very clear from log messages / known APIs
+#
+# Edit this file and restart the server to apply changes.
+
+timeouts:
+  # Maximum time for one decompilation attempt used by decompile_function,
+  # batch_decompile, and analyze_function_complete.
+  decompile_seconds: 60
+
+import:
+  # Minimum number of sub-folder levels required in the project_dir supplied to
+  # import_binary.  0 (default) allows placing binaries in the project root.
+  # Set to 1 or higher to enforce an organised folder structure, e.g.:
+  #   min_directory_depth: 1  → project_dir must be at least "binaries"
+  #   min_directory_depth: 2  → project_dir must be at least "targets/2026"
+  min_directory_depth: 0
+
+  # When set, the absolute file_path supplied to import_binary must start with
+  # this prefix, and the project_dir must equal the relative parent directory of
+  # the file after stripping the prefix.
+  #
+  # Example: require_child_path: /a/
+  #   Importing /a/hello/bin/moo.exe  → project_dir must be "hello/bin"
+  #   Importing /a/moo.exe            → project_dir must be "" or "/"
+  #
+  # Uncomment and set the path to enable this constraint:
+  # require_child_path: /targets/
+
+naming:
+
+  function_name:
+    pattern: "^((maybe_|likely_|guess_)[a-zA-Z0-9_]+|main|entry|_start)$"
+    message: >
+      Function names must start with maybe_, likely_, or guess_ (see REVERSING.md).
+      Use maybe_<name> for names inferred from code behaviour,
+      likely_<name> when a log message or known API makes it unambiguous,
+      guess_<name> for quick labels without investigation.
+      The exact names main, entry and _start are also permitted.
+
+  variable_name:
+    pattern: "^(maybe_|likely_|guess_)[a-zA-Z][a-zA-Z0-9_]*$"
+    message: >
+      Variable and parameter names must start with maybe_, likely_, or guess_ (see REVERSING.md).
+
+  struct_field_name:
+    pattern: "^(maybe_|likely_|guess_)[a-zA-Z0-9_]+(_0x[0-9a-fA-F]+)?$"
+    message: >
+      Struct field names must follow maybe_<name>_0x<offset> format (see REVERSING.md).
+      The offset suffix (e.g. _0x8) makes it easy to detect accidental layout shifts.
+      Example: maybe_size_0x8, maybe_vtable_0x0
+
+  struct_name:
+    pattern: "^(maybe_|likely_|guess_)[a-zA-Z][a-zA-Z0-9_]*$"
+    message: >
+      Struct names must start with maybe_, likely_, or guess_ (see REVERSING.md).
+      Use maybe_<name> for types inferred from code behaviour,
+      likely_<name> when a library header or debug information makes it unambiguous,
+      guess_<name> for quick labels without investigation.

@@ -1,0 +1,85 @@
+// Ghidra Extension Build for ghidra-mcp-ng
+//
+// Requires GHIDRA_HOME env var pointing to a Ghidra installation:
+//   export GHIDRA_HOME=/path/to/ghidra
+//   gradle buildExtension
+//
+// The built ZIP will be in dist/.
+
+def ghidraInstallDir
+
+if (System.env.GHIDRA_HOME) {
+    ghidraInstallDir = System.env.GHIDRA_HOME
+} else if (project.hasProperty("GHIDRA_HOME")) {
+    ghidraInstallDir = project.getProperty("GHIDRA_HOME")
+} else {
+    throw new GradleException("GHIDRA_HOME environment variable is not set")
+}
+
+apply from: new File(ghidraInstallDir).getCanonicalPath() + "/support/buildExtension.gradle"
+
+// Exclude repo tooling and dev artifacts — the ZIP should only contain the extension itself.
+buildExtension {
+    exclude '*.py'
+    exclude '*.md'
+    exclude 'Makefile'
+    exclude '__pycache__/**'
+    exclude 'tests/**'
+    exclude 'scripts/**'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // SnakeYAML for rules.yaml parsing (not bundled in Ghidra)
+    implementation 'org.yaml:snakeyaml:2.2'
+
+    // Lightweight JAX-RS runtime for the plugin HTTP API
+    implementation 'org.glassfish.jersey.core:jersey-server:3.1.5'
+    implementation 'org.glassfish.jersey.containers:jersey-container-jdk-http:3.1.5'
+    implementation 'org.glassfish.jersey.inject:jersey-hk2:3.1.5'
+    implementation 'org.glassfish.jersey.media:jersey-media-json-gson:3.1.5'
+    implementation 'jakarta.ws.rs:jakarta.ws.rs-api:3.1.0'
+        implementation 'io.swagger.core.v3:swagger-jaxrs2-jakarta:2.2.22'
+
+    // JUnit 5 for unit tests
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// Include extension.properties on the classpath so ReadTools.loadVersion() can read the version.
+processResources {
+    from(rootDir) {
+        include 'extension.properties'
+    }
+}
+
+// Generate OpenAPI spec from JAX-RS annotations — no running server required.
+// Output: build/openapi.json  (consumed by scripts/generate_tools_docs.py)
+task generateOpenApiSpec(type: JavaExec, dependsOn: compileJava) {
+    group = 'documentation'
+    description = 'Scan JAX-RS annotations and emit build/openapi.json'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.ghidramcpng.GenerateSpec'
+    args = ["${buildDir}/openapi.json"]
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events "passed", "failed", "skipped"
+        showStandardStreams = true
+    }
+}
+
+// Expose the Ghidra jar dir for test compilation (needed since Ghidra JARs are added via fileTree)
+sourceSets {
+    test {
+        java {
+            srcDirs = ['src/test/java']
+        }
+    }
+}
