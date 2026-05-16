@@ -9,7 +9,6 @@ import ghidra.framework.model.TransactionInfo;
 import ghidra.program.model.listing.Program;
 import ghidra.util.task.TaskMonitor;
 
-import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -179,7 +178,6 @@ public class ProgramManager {
                     program.getName() + "' after 300s");
         }
         try {
-            abortLeakedTransaction(program, "leftover transaction from a previous run");
             analyzeProgramBlocking(program);
             // Save the analysis results so subsequent server restarts see the analyzed program.
             program.getDomainFile().save(TaskMonitor.DUMMY);
@@ -243,10 +241,6 @@ public class ProgramManager {
                     program.getName() + "' after 300s");
         }
         try {
-            // Defensive pre-check: a previous (poorly-written) script may have left a
-            // Ghidra transaction open. Roll it back so this run starts clean.
-            abortLeakedTransaction(program, "leftover transaction from a previous run");
-
             boolean actionSucceeded = false;
             try {
                 T result = action.call();
@@ -256,12 +250,7 @@ public class ProgramManager {
                 TransactionInfo leftover = program.getCurrentTransactionInfo();
                 if (leftover != null) {
                     String desc = leftover.getDescription();
-                    try {
-                        program.forceLock(true, "ng: aborting leaked transaction '" + desc + "'");
-                        program.unlock();
-                    } catch (Exception ignored) {
-                        // Best effort; original error (if any) is more important to surface.
-                    }
+                    drainLeakedEntries(program, "aborting leaked transaction '" + desc + "'");
                     if (actionSucceeded) {
                         // Action returned normally but left a transaction open — surface so the
                         // user knows their script is buggy instead of silently swallowing it.
@@ -281,19 +270,75 @@ public class ProgramManager {
     }
 
     /**
-     * If a Ghidra transaction is still open on {@code program} (i.e. leaked from a previous
-     * caller — typically a script that threw mid-transaction), force-rollback. No-op if no
-     * transaction is active.
+     * Drain any open sub-transaction entries that a GhidraScript leaked by calling
+     * {@code currentProgram.startTransaction()} without a matching {@code endTransaction()}.
+     *
+     * <h3>Why this is needed</h3>
+     * <p>GhidraScript wraps {@code run()} in its own transaction (entry #0). Scripts may
+     * legally open additional sub-transaction entries; {@code GhidraScript.end(true)} only
+     * closes entry #0. If the script throws mid-run, those extra entries remain open
+     * ({@code activeEntries > 0}), so Ghidra never sets {@code transaction = null} and the
+     * program is effectively stuck: any subsequent {@code startTransaction()} either fails
+     * or opens a new entry in the dead transaction.
+     *
+     * <h3>The drain algorithm</h3>
+     * <p>Ghidra uses an ID scheme: each entry added to the active
+     * {@code DomainObjectDBTransaction} gets ID {@code baseId + list_index}. We add a
+     * sentinel "drain" entry (getting the next available ID&nbsp;=&nbsp;R), immediately end
+     * it with {@code commit=false} to mark the transaction as ABORTED, then walk backwards
+     * ending the N leaked entries at IDs R&#8209;1, R&#8209;2, …, R&#8209;N. When
+     * {@code activeEntries} reaches zero Ghidra's own code runs the ABORTED cleanup path
+     * (closes the DB transaction, invalidates caches, sets {@code transaction = null}) — no
+     * reflection needed.
+     *
+     * <h3>Fallback</h3>
+     * <p>If the drain fails (e.g. a previous run already called {@code forceLock} and set
+     * {@code transactionTerminated = true}), we fall back to {@code forceLock} + {@code unlock}.
+     * This leaves {@code transaction} non-null internally, so the NEXT call to this method
+     * (in the pre-action safety-net of the following {@code withProgramLock} invocation) will
+     * encounter that state — at which point {@code getCurrentTransactionInfo()} still returns
+     * non-null and we attempt the drain again (which will fail again via
+     * {@code TerminatedTransactionException}). In this degenerate case the program remains
+     * unusable, which is the correct behaviour: something went badly wrong and the operator
+     * should restart the server to reload the program from disk.
      */
-    private static void abortLeakedTransaction(Program program, String reason) {
+    private static void drainLeakedEntries(Program program, String context) {
         TransactionInfo info = program.getCurrentTransactionInfo();
-        if (info != null) {
-            try {
-                program.forceLock(true, "ng: " + reason + " ('" + info.getDescription() + "')");
-                program.unlock();
-            } catch (Exception ignored) {
-                // Best effort — if even forceLock fails, the next caller will surface a clearer error.
+        if (info == null) return;
+
+        List<String> leaked = info.getOpenSubTransactions();
+        int N = leaked.size();
+        if (N == 0) return;
+
+        try {
+            // Add a sentinel entry BEFORE the first endTransaction so we have a known anchor
+            // ID (R). This is safe because transactionTerminated is still false here — forceLock
+            // has not been called yet.
+            int R = program.startTransaction("_ng_tx_drain (" + context + ")");
+            // End the sentinel with commit=false. This marks the transaction as ABORTED at the
+            // domain level. activeEntries drops from N+1 to N; since N > 0 the ABORTED cleanup
+            // path does not fire yet (getStatus() returns NOT_DONE_BUT_ABORTED).
+            program.endTransaction(R, false);
+            // End leaked entries newest-first. Each ID is R-i (i=1..N). When the last one
+            // (activeEntries reaches 0) is ended, getStatus() returns ABORTED and Ghidra's
+            // own cleanup runs: DB transaction closed, caches invalidated, transaction = null.
+            for (int i = 1; i <= N; i++) {
+                try {
+                    program.endTransaction(R - i, false);
+                } catch (Exception ignored) {
+                    // Entry already ended somehow; keep going to drive activeEntries to 0.
+                }
             }
+        } catch (Exception drainFailed) {
+            // transactionTerminated was already true (forceLock ran previously). Fall back to
+            // forceLock, which at least terminates the DB transaction even if it cannot null
+            // out the internal transaction reference.
+            try {
+                program.forceLock(true,
+                        "ng: drain failed (" + context + "), force-terminating '" +
+                        info.getDescription() + "'");
+                program.unlock();
+            } catch (Exception ignored) { }
         }
     }
 
@@ -312,11 +357,6 @@ public class ProgramManager {
                     program.getName() + "' after 300s");
         }
         try {
-            // Defensive pre-check: a poorly-behaved script run earlier may have leaked a
-            // Ghidra transaction. Roll it back so we don't hit "Unable to lock due to active
-            // transaction" on save() below.
-            abortLeakedTransaction(program, "leftover transaction from a previous run");
-
             int txId = program.startTransaction(description);
             boolean success = false;
             try {

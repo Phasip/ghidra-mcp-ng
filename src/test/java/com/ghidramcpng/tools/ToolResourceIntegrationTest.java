@@ -1500,6 +1500,64 @@ class ToolResourceIntegrationTest {
                         "filename", "NonExistentScript_xyz_99999.java")));
     }
 
+    /**
+     * Reproduces the bug from ghidra_bug.md: a script that manually opens a Ghidra
+     * transaction via {@code currentProgram.startTransaction()} and then throws without
+     * calling {@code endTransaction()} leaves the program database in a locked state.
+     *
+     * <p>After such a crash, every subsequent MCP call against the same program was
+     * failing with "Transaction has not been started" / "No transaction is open". The fix
+     * is in {@code ProgramManager.withProgramLock}: after the action completes (whether
+     * normally or exceptionally) it detects and terminates any leftover transaction before
+     * releasing the lock, so the next caller always starts from a clean state.
+     */
+    @Test
+    void runScript_leakedTransaction_doesNotLockSubsequentCalls() throws Exception {
+        // Build a script that opens a nested transaction then throws without ending it.
+        String scriptClassName = "LeakTxTest" + UUID.randomUUID().toString().replace("-", "");
+        Path sourceDir = Files.createTempDirectory("ghidra-mcp-ng-leak-tx");
+        Path sourceScript = sourceDir.resolve(scriptClassName + ".java");
+        Files.writeString(sourceScript,
+                "import ghidra.app.script.GhidraScript;\n" +
+                "public class " + scriptClassName + " extends GhidraScript {\n" +
+                "    @Override\n" +
+                "    public void run() throws Exception {\n" +
+                        // Open an extra nested transaction on top of the one GhidraScript opens
+                "        int txId = currentProgram.startTransaction(\"leaked-tx\");\n" +
+                        // Intentionally do NOT call endTransaction — simulate a crash
+                "        throw new RuntimeException(\"simulated script crash\");\n" +
+                "    }\n" +
+                "}\n",
+                StandardCharsets.UTF_8);
+
+        ScriptTool.AddScriptResponse added = scriptTool.addScript(json(
+                "file_path", sourceScript.toString()));
+        try {
+            // The script should fail — that's expected.
+            assertThrows(Exception.class, () -> scriptTool.runScript(json(
+                    "program", programName,
+                    "filename", added.filename())));
+
+            // The critical assertion: the program must be fully operational afterwards.
+            // A write operation through withTransaction is the strongest probe — if any
+            // transaction is still open (leaked) it will fail when trying to start a new one.
+            WriteTools.RenameFunctionResponse rename = writeTools.renameFunction(json(
+                    "program", programName,
+                    "name_or_address", FN_ADD,
+                    "new_name", FN_ADD + "_afterLeakTest"));
+            assertTrue(rename.success(),
+                    "renameFunction must succeed after a script that leaked a transaction");
+
+            // Restore original name so later tests are unaffected.
+            writeTools.renameFunction(json(
+                    "program", programName,
+                    "name_or_address", FN_ADD + "_afterLeakTest",
+                    "new_name", FN_ADD));
+        } finally {
+            scriptTool.deleteScript(json("filename", added.filename()));
+        }
+    }
+
     @Test
     void deleteScript_removesScriptFromList() throws Exception {
         String scriptClassName = "DeleteScriptTest" + UUID.randomUUID().toString().replace("-", "");
