@@ -338,7 +338,10 @@ public class ProgramManager {
                         "ng: drain failed (" + context + "), force-terminating '" +
                         info.getDescription() + "'");
                 program.unlock();
-            } catch (Exception ignored) { }
+            } catch (Exception ignored) {
+                System.err.println("[ghidra-mcp-ng] WARNING: forceLock fallback also failed during " +
+                        context + " — program '" + program.getName() + "' may be unusable: " + ignored);
+            }
         }
     }
 
