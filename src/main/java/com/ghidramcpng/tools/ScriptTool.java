@@ -94,7 +94,10 @@ public class ScriptTool {
                     try {
                         java.nio.file.Path dirPath = dir.getFile(false).toPath();
                         if (!dirPath.equals(extDir)) collectScriptNames(dirPath, scripts);
-                    } catch (java.io.IOException ignored) {}
+                    } catch (java.io.IOException e) {
+                        System.err.println("[ghidra-mcp-ng] WARNING: skipping script directory '" +
+                                dir + "': " + e);
+                    }
                 }
             }
 
