@@ -15,6 +15,7 @@ import com.ghidramcpng.program.ProgramManager;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import ghidra.program.model.address.AddressIterator;
+import ghidra.program.model.data.BuiltInDataTypeManager;
 import ghidra.program.model.data.Category;
 import ghidra.program.model.data.DataType;
 import ghidra.program.model.data.Structure;
@@ -625,13 +626,34 @@ public class ReadTools {
         int validatedLimit = requireLimit(limit, 500, "limit");
         String loweredQuery = query == null ? "" : query.trim().toLowerCase();
         List<DataTypeEntry> found = new ArrayList<>();
+
+        // Collect type names already gathered to avoid duplicates when built-in types
+        // are also present in the program's DataTypeManager (e.g. after auto-analysis).
+        Set<String> seen = new java.util.HashSet<>();
+
         Iterator<DataType> iterator = program.getDataTypeManager().getAllDataTypes();
         while (iterator.hasNext() && found.size() < validatedLimit) {
             DataType dataType = iterator.next();
             if (loweredQuery.isEmpty() || dataType.getName().toLowerCase().contains(loweredQuery)) {
                 found.add(DataTypeEntry.from(dataType));
+                seen.add(dataType.getDataTypePath().getPath());
             }
         }
+
+        // Also include built-in types (int, byte, dword, etc.) which live in
+        // BuiltInDataTypeManager and are absent from the program's manager on
+        // programs without debug symbols.
+        Iterator<DataType> builtInIterator =
+                BuiltInDataTypeManager.getDataTypeManager().getAllDataTypes();
+        while (builtInIterator.hasNext() && found.size() < validatedLimit) {
+            DataType dataType = builtInIterator.next();
+            String path = dataType.getDataTypePath().getPath();
+            if (seen.contains(path)) continue;
+            if (loweredQuery.isEmpty() || dataType.getName().toLowerCase().contains(loweredQuery)) {
+                found.add(DataTypeEntry.from(dataType));
+            }
+        }
+
         return new SearchDataTypesResponse(found, found.size());
     }
 

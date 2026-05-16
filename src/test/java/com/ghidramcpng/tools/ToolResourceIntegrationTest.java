@@ -1841,6 +1841,149 @@ class ToolResourceIntegrationTest {
     }
 
     // -------------------------------------------------------------------------
+    // Built-in primitive type resolution
+    // -------------------------------------------------------------------------
+
+    /**
+     * Every primitive listed in the error-message docs must be accepted by addStructField
+     * without throwing. This guards against regressions where built-in types are not found
+     * because they live in BuiltInDataTypeManager rather than the program's DataTypeManager.
+     */
+    @ParameterizedTest(name = "addStructField accepts built-in type: {0}")
+    @MethodSource("builtInFieldTypeNames")
+    void addStructField_acceptsBuiltInType(String typeName) {
+        String structName = "BuiltinTypeTest_" + typeName.replace("*", "Ptr");
+        writeTools.createStruct(json(
+                "program", programName,
+                "name", structName,
+                "size", 16,
+                "category", "/mcp_builtin_test"));
+
+        WriteTools.AddStructFieldResponse response = writeTools.addStructField(json(
+                "program", programName,
+                "struct_name", structName,
+                "field_name", "field_0",
+                "type_name", typeName));
+        assertTrue(response.success(),
+                "addStructField must accept built-in type '" + typeName + "'");
+    }
+
+    /**
+     * Every primitive listed in the error-message docs must be accepted by
+     * setFunctionPrototype as a return type and as a parameter type.
+     */
+    @ParameterizedTest(name = "setFunctionPrototype accepts built-in type: {0}")
+    @MethodSource("builtInTypeNames")
+    void setFunctionPrototype_acceptsBuiltInReturnType(String typeName) {
+        // void is not valid as a parameter type but is valid as a return type
+        WriteTools.SetFunctionPrototypeResponse response = writeTools.setFunctionPrototype(json(
+                "program", programName,
+                "name_or_address", FN_ADD,
+                "return_type", typeName,
+                "parameters", new JsonArray()));
+        assertTrue(response.success(),
+                "setFunctionPrototype must accept built-in return type '" + typeName + "'");
+    }
+
+    /** Pointer-to-built-in type (e.g. "uint*") must resolve correctly. */
+    @Test
+    void addStructField_acceptsPointerToBuiltInType() {
+        writeTools.createStruct(json(
+                "program", programName,
+                "name", "BuiltinPtrTest",
+                "size", 16,
+                "category", "/mcp_builtin_test"));
+
+        // "uint*" uses uint which is not present in the C fixture's DWARF info, ensuring
+        // the test exercises the BuiltInDataTypeManager fallback path.
+        WriteTools.AddStructFieldResponse response = writeTools.addStructField(json(
+                "program", programName,
+                "struct_name", "BuiltinPtrTest",
+                "field_name", "p_uint",
+                "type_name", "uint*"));
+        assertTrue(response.success(), "addStructField must accept 'uint*' (pointer to built-in)");
+    }
+
+    /** Array-of-built-in type (e.g. "uint[4]") must resolve correctly. */
+    @Test
+    void addStructField_acceptsArrayOfBuiltInType() {
+        writeTools.createStruct(json(
+                "program", programName,
+                "name", "BuiltinArrayTest",
+                "size", 16,
+                "category", "/mcp_builtin_test"));
+
+        // "uint[4]" uses uint which is not present in the C fixture's DWARF info.
+        WriteTools.AddStructFieldResponse response = writeTools.addStructField(json(
+                "program", programName,
+                "struct_name", "BuiltinArrayTest",
+                "field_name", "data",
+                "type_name", "uint[4]"));
+        assertTrue(response.success(), "addStructField must accept 'uint[4]' (array of built-in)");
+    }
+
+    /** The standalone "pointer" type (generic void pointer) must resolve. */
+    @Test
+    void addStructField_acceptsStandalonePointerType() {
+        writeTools.createStruct(json(
+                "program", programName,
+                "name", "BuiltinStandalonePointerTest",
+                "size", 16,
+                "category", "/mcp_builtin_test"));
+
+        WriteTools.AddStructFieldResponse response = writeTools.addStructField(json(
+                "program", programName,
+                "struct_name", "BuiltinStandalonePointerTest",
+                "field_name", "generic_ptr",
+                "type_name", "pointer"));
+        assertTrue(response.success(), "addStructField must accept 'pointer' (generic pointer type)");
+    }
+
+    /**
+     * searchDataTypes must include built-in types such as Ghidra's "dword".
+     * Before the fix, the search only covered the program's DataTypeManager. On programs
+     * without debug symbols (e.g. raw binary dumps) this returned 0 results for any
+     * primitive. The GCC test fixture happens to have many built-ins pre-populated via
+     * auto-analysis, so these tests verify correct behaviour on both kinds of program.
+     */
+    @Test
+    void searchDataTypes_includesBuiltInTypes() {
+        // "dword" is a Ghidra built-in type that is never present in a C ELF program's
+        // DataTypeManager (which only has types from DWARF/GCC), so it reliably tests
+        // whether the search covers BuiltInDataTypeManager.
+        ReadTools.SearchDataTypesResponse result =
+                readTools.searchDataTypes(programName, "dword", 50);
+        assertTrue(result.count() > 0,
+                "searchDataTypes('dword') must return at least one result (built-in 'dword' type)");
+        assertTrue(result.data_types().stream().anyMatch(dt -> dt.name().equals("dword")),
+                "searchDataTypes('dword') must include the exact built-in 'dword' type");
+    }
+
+    @Test
+    void searchDataTypes_emptyQueryIncludesBuiltInTypes() {
+        ReadTools.SearchDataTypesResponse all =
+                readTools.searchDataTypes(programName, "", 500);
+        // "dword" and "word" are Ghidra-specific built-ins absent from C DWARF info.
+        assertTrue(all.data_types().stream().anyMatch(dt -> dt.name().equals("dword")),
+                "searchDataTypes with empty query must include built-in 'dword'");
+        assertTrue(all.data_types().stream().anyMatch(dt -> dt.name().equals("word")),
+                "searchDataTypes with empty query must include built-in 'word'");
+    }
+
+    static Stream<Arguments> builtInTypeNames() {
+        return Stream.of("int", "uint", "long", "ulong", "byte", "short", "ushort",
+                "float", "double", "bool", "char", "void")
+                .map(Arguments::of);
+    }
+
+    /** Built-in types valid as struct field types (excludes void, which has no fixed size). */
+    static Stream<Arguments> builtInFieldTypeNames() {
+        return Stream.of("int", "uint", "long", "ulong", "byte", "short", "ushort",
+                "float", "double", "bool", "char")
+                .map(Arguments::of);
+    }
+
+    // -------------------------------------------------------------------------
     // Private infrastructure (unchanged)
     // -------------------------------------------------------------------------
 

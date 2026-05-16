@@ -6,6 +6,7 @@ import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileOptions;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.data.BuiltInDataTypeManager;
 import ghidra.program.model.data.DataType;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
@@ -18,8 +19,10 @@ import jakarta.ws.rs.POST;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 /**
  * Shared utility methods used by the tool resources.
@@ -226,6 +229,16 @@ public final class ToolHelpers {
         }
     }
 
+    /** Returns a sorted, comma-separated list of all names in the BuiltInDataTypeManager. */
+    private static String builtInTypeNames() {
+        Iterator<DataType> it = BuiltInDataTypeManager.getDataTypeManager().getAllDataTypes();
+        Iterable<DataType> iterable = () -> it;
+        return StreamSupport.stream(iterable.spliterator(), false)
+                .map(DataType::getName)
+                .sorted()
+                .collect(Collectors.joining(", "));
+    }
+
     /**
      * Find a data type by name. Searches the program's DataTypeManager.
      * Handles pointer notation (e.g. "int*" or "SomeStruct *") recursively.
@@ -310,11 +323,19 @@ public final class ToolHelpers {
         DataType dt = program.getDataTypeManager().getDataType(trimmed);
         if (dt != null) return dt;
 
+        // Fall back to built-in types (int, byte, short, etc.) which live in
+        // BuiltInDataTypeManager and are not always present in the program's manager.
+        List<DataType> builtInMatches = new ArrayList<>();
+        BuiltInDataTypeManager.getDataTypeManager().findDataTypes(trimmed, builtInMatches);
+        if (!builtInMatches.isEmpty()) {
+            return builtInMatches.get(0);
+        }
+
         throw new IllegalArgumentException(
                 "Data type not found: '" + typeName + "'. " +
                 "Use list_data_types or search_data_types to find valid type names. " +
-                "Built-in types include: int, uint, long, ulong, byte, short, ushort, " +
-                "float, double, bool, char, void, pointer, and any struct you have created.");
+                "Built-in types include: " + builtInTypeNames() +
+                ", and any struct you have created.");
     }
 
     /**
