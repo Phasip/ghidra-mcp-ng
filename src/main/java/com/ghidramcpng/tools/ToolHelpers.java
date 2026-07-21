@@ -22,7 +22,6 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.stream.Collectors;
-import java.util.stream.StreamSupport;
 
 /**
  * Shared utility methods used by the tool resources.
@@ -129,10 +128,18 @@ public final class ToolHelpers {
                 Address addr = program.getAddressFactory().getDefaultAddressSpace().getAddress(offset);
                 Function f = program.getFunctionManager().getFunctionAt(addr);
                 if (f != null) return f;
+                // Diagnose the common mistake of passing a mid-function address: point at the
+                // containing function's actual entry point rather than a generic hint.
+                Function containing = program.getFunctionManager().getFunctionContaining(addr);
+                if (containing != null) {
+                    throw new IllegalArgumentException(
+                            "Address " + nameOrAddress + " is inside function '" + containing.getName() +
+                            "' but is not its entry point. Pass the entry point 0x" +
+                            containing.getEntryPoint() + " to reference this function.");
+                }
                 throw new IllegalArgumentException(
-                        "No function at address " + nameOrAddress + ". " +
-                        "The address must be a function entry point. " +
-                        "Use list_functions or list_exports to find valid entry points.");
+                        "No function at address " + nameOrAddress + ", and the address is not inside any " +
+                        "defined function. Use search_functions or list_exports to find valid entry points.");
             } catch (NumberFormatException e) {
                 throw new IllegalArgumentException(
                         "Invalid hex address '" + nameOrAddress + "'. " +
@@ -229,16 +236,6 @@ public final class ToolHelpers {
         }
     }
 
-    /** Returns a sorted, comma-separated list of all names in the BuiltInDataTypeManager. */
-    private static String builtInTypeNames() {
-        Iterator<DataType> it = BuiltInDataTypeManager.getDataTypeManager().getAllDataTypes();
-        Iterable<DataType> iterable = () -> it;
-        return StreamSupport.stream(iterable.spliterator(), false)
-                .map(DataType::getName)
-                .sorted()
-                .collect(Collectors.joining(", "));
-    }
-
     /**
      * Find a data type by name. Searches the program's DataTypeManager.
      * Handles pointer notation (e.g. "int*" or "SomeStruct *") recursively.
@@ -331,11 +328,76 @@ public final class ToolHelpers {
             return builtInMatches.get(0);
         }
 
+        String suggestions = suggestDataTypeNames(program, trimmed);
         throw new IllegalArgumentException(
                 "Data type not found: '" + typeName + "'. " +
-                "Use list_data_types or search_data_types to find valid type names. " +
-                "Built-in types include: " + builtInTypeNames() +
-                ", and any struct you have created.");
+                (suggestions != null
+                        ? "Did you mean: " + suggestions + "? "
+                        : "") +
+                "Use search_data_types to find valid type names (names are case-sensitive).");
+    }
+
+    /**
+     * Returns a short comma-separated list of existing data-type names closest to {@code query}
+     * (program types and built-ins), or {@code null} if none are similar enough. Keeps a failed
+     * lookup actionable without dumping the entire type catalogue into the error message.
+     */
+    private static String suggestDataTypeNames(Program program, String query) {
+        String lowerQuery = query.toLowerCase();
+        java.util.TreeMap<Integer, java.util.LinkedHashSet<String>> ranked = new java.util.TreeMap<>();
+        java.util.function.Consumer<String> consider = candidate -> {
+            if (candidate == null || candidate.isBlank()) {
+                return;
+            }
+            String lowerCandidate = candidate.toLowerCase();
+            int distance = levenshtein(lowerQuery, lowerCandidate);
+            boolean substring = lowerCandidate.contains(lowerQuery) || lowerQuery.contains(lowerCandidate);
+            int threshold = Math.max(2, query.length() / 2);
+            if (distance > threshold && !substring) {
+                return;
+            }
+            int score = substring ? Math.min(distance, 1) : distance;
+            ranked.computeIfAbsent(score, k -> new java.util.LinkedHashSet<>()).add(candidate);
+        };
+
+        Iterator<DataType> programTypes = program.getDataTypeManager().getAllDataTypes();
+        while (programTypes.hasNext()) {
+            consider.accept(programTypes.next().getName());
+        }
+        Iterator<DataType> builtInTypes = BuiltInDataTypeManager.getDataTypeManager().getAllDataTypes();
+        while (builtInTypes.hasNext()) {
+            consider.accept(builtInTypes.next().getName());
+        }
+
+        List<String> best = new ArrayList<>();
+        for (java.util.LinkedHashSet<String> bucket : ranked.values()) {
+            for (String name : bucket) {
+                best.add(name);
+                if (best.size() == 5) {
+                    return String.join(", ", best);
+                }
+            }
+        }
+        return best.isEmpty() ? null : String.join(", ", best);
+    }
+
+    private static int levenshtein(String a, String b) {
+        int[] prev = new int[b.length() + 1];
+        int[] curr = new int[b.length() + 1];
+        for (int j = 0; j <= b.length(); j++) {
+            prev[j] = j;
+        }
+        for (int i = 1; i <= a.length(); i++) {
+            curr[0] = i;
+            for (int j = 1; j <= b.length(); j++) {
+                int cost = a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1;
+                curr[j] = Math.min(Math.min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
+            }
+            int[] tmp = prev;
+            prev = curr;
+            curr = tmp;
+        }
+        return prev[b.length()];
     }
 
     /**

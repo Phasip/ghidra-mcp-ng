@@ -33,8 +33,11 @@ ScriptTool (5):
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from uuid import uuid4
+
+import pytest
 
 from conftest import GhidraClient
 
@@ -301,7 +304,11 @@ class TestFunctionLookup:
             {"program": prog, "name_or_address": inside_addr},
         )
         assert response["ok"] is False
-        assert "function entry point" in response.get("error", "").lower()
+        # The error should diagnose the specific mistake: the address is inside a known
+        # function but is not its entry point, and it should name that function.
+        err = response.get("error", "").lower()
+        assert "entry point" in err
+        assert "add" in err
 
     def test_search_functions(self, ghidra_server: GhidraClient, prog: str):
         result = ghidra_server.ok(
@@ -372,6 +379,37 @@ class TestDecompilation:
         assert result["count"] > 0
         assert len(result["lines"]) == result["count"]
 
+    def test_get_disassembly_accepts_function_name(self, ghidra_server: GhidraClient, prog: str):
+        # A name resolves to its symbol address — no separate lookup needed.
+        result = ghidra_server.ok(
+            "get_disassembly",
+            {"program": prog, "address": "add", "instructions": 5},
+        )
+        assert result["count"] > 0
+        assert len(result["lines"]) == result["count"]
+
+    def test_get_disassembly_reports_truncation(self, ghidra_server: GhidraClient, prog: str):
+        addr = _func_address(ghidra_server, prog, "add")
+        # A single-instruction window into a larger function must flag more remain.
+        result = ghidra_server.ok(
+            "get_disassembly",
+            {"program": prog, "address": _hex(addr), "instructions": 1},
+        )
+        assert result["truncated"] is True
+        assert result["next_address"] is not None
+
+    def test_unknown_query_param_is_rejected(self, ghidra_server: GhidraClient, prog: str):
+        addr = _func_address(ghidra_server, prog, "add")
+        # 'count' is not a real parameter (it is 'item_count') — the server must reject
+        # it with a clear error instead of silently falling back to defaults.
+        resp = ghidra_server.call(
+            "read_data",
+            {"program": prog, "address": _hex(addr), "count": 112},
+        )
+        assert resp["ok"] is False
+        assert "count" in resp["error"]
+        assert "item_count" in resp["error"]
+
     def test_read_data_returns_items(self, ghidra_server: GhidraClient, prog: str):
         addr = _func_address(ghidra_server, prog, "add")
         result = ghidra_server.ok(
@@ -421,7 +459,7 @@ class TestXrefs:
         addr = _func_address(ghidra_server, prog, "add")
         result = ghidra_server.ok(
             "get_xrefs_to",
-            {"program": prog, "address_or_name": _hex(addr)},
+            {"program": prog, "name_or_address": _hex(addr)},
         )
         assert "xrefs" in result
         assert "count" in result
@@ -445,14 +483,14 @@ class TestXrefs:
         addr = _func_address(ghidra_server, prog, "add")
         result = ghidra_server.ok(
             "get_xrefs_to",
-            {"program": prog, "address_or_name": _hex(addr), "ref_types": ["CALL"]},
+            {"program": prog, "name_or_address": _hex(addr), "ref_types": ["CALL"]},
         )
         assert "call_refs" in result
 
     def test_get_xrefs_to_includes_indirect_calls_key(self, ghidra_server: GhidraClient, prog: str):
         result = ghidra_server.ok(
             "get_xrefs_to",
-            {"program": prog, "address_or_name": "add"},
+            {"program": prog, "name_or_address": "add"},
         )
         assert "indirect_calls" in result
 
@@ -470,7 +508,7 @@ class TestXrefs:
         bare = addr[2:] if addr.startswith("0x") else addr
         err = ghidra_server.call(
             "get_xrefs_to",
-            {"program": prog, "address_or_name": bare},
+            {"program": prog, "name_or_address": bare},
         )
         assert err["ok"] is False
 
@@ -535,6 +573,64 @@ class TestWriteOperations:
              "variable_name": new_name,
              "new_name": original_name},
         )
+
+    def test_rename_nonexistent_variable_reports_not_found(
+            self, ghidra_server: GhidraClient, prog: str):
+        resp = ghidra_server.call(
+            "rename_variable",
+            {"program": prog,
+             "name_or_address": "add",
+             "variable_name": "definitely_not_a_real_variable_xyz",
+             "new_name": "whatever"},
+        )
+        assert resp["ok"] is False
+        error = resp.get("error", "")
+        # A name that exists nowhere must be reported as not found — not misattributed
+        # to a decompiler temporary.
+        assert "not found" in error.lower()
+        assert "decompiler-derived" not in error
+
+    def test_rename_decompiler_temporary_explains_why(
+            self, ghidra_server: GhidraClient, prog: str):
+        # Find a real decompiler temporary (e.g. uVar1, iVar3, uStack_c) in any function so
+        # the test is robust across Ghidra versions and fixture simplicity. Such names are
+        # register/intermediate values shown by the decompiler but not renameable.
+        functions = ghidra_server.ok(
+            "search_functions", {"program": prog, "query": "", "limit": 500}
+        )["functions"]
+        temp_re = re.compile(r"\b(?:[a-z]{1,4}Var\d+|[a-z]?[uib]?Stack_[0-9a-f]+)\b")
+        found_func = found_temp = None
+        for fn in functions:
+            decompiled = ghidra_server.ok(
+                "decompile_function",
+                {"program": prog, "name_or_address": fn["name"]},
+            )["decompiled"]
+            renameable = {
+                v["name"] for v in ghidra_server.ok(
+                    "get_function_variables",
+                    {"program": prog, "name_or_address": fn["name"]},
+                )["variables"]
+            }
+            for token in temp_re.findall(decompiled):
+                if token not in renameable:  # a genuine non-committed temporary
+                    found_func, found_temp = fn["name"], token
+                    break
+            if found_temp:
+                break
+        if found_temp is None:
+            pytest.skip("No decompiler temporary present in the fixture binary")
+
+        resp = ghidra_server.call(
+            "rename_variable",
+            {"program": prog,
+             "name_or_address": found_func,
+             "variable_name": found_temp,
+             "new_name": "renamed_temp"},
+        )
+        assert resp["ok"] is False
+        error = resp.get("error", "")
+        assert "decompiler-derived" in error
+        assert found_temp in error
 
     def test_set_function_prototype(
             self, ghidra_server: GhidraClient, prog: str):
@@ -785,6 +881,24 @@ class TestStructs:
         error = response.get("error", "")
         assert "Ghidra internal generated type" in error
         assert "void*" in error
+
+    def test_unknown_data_type_suggests_close_match(self, ghidra_server: GhidraClient, prog: str):
+        # A near-miss type name (typo of 'uint') should get a targeted suggestion rather than
+        # a dump of every built-in type.
+        response = ghidra_server.call(
+            "set_parameter_type",
+            {"program": prog,
+             "name_or_address": "compute",
+             "parameter_index": 0,
+             "type_name": "uintt"},
+        )
+        assert response["ok"] is False
+        error = response.get("error", "")
+        assert "not found" in error.lower()
+        assert "Did you mean" in error
+        assert "uint" in error
+        # The old behaviour dumped the whole catalogue — guard against regressing to that.
+        assert len(error) < 400
 
 
 # ---------------------------------------------------------------------------

@@ -4,6 +4,9 @@ import com.ghidramcpng.program.ProgramManager;
 import com.ghidramcpng.rules.RulesEngine;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import ghidra.app.decompiler.DecompileResults;
+import ghidra.program.model.pcode.HighFunction;
+import ghidra.program.model.pcode.HighSymbol;
 import ghidra.program.model.data.DataType;
 import ghidra.program.model.data.DataTypeComponent;
 import ghidra.program.model.data.DataTypeConflictHandler;
@@ -35,6 +38,7 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 
 import static com.ghidramcpng.tools.ToolHelpers.findDataType;
@@ -57,6 +61,9 @@ import static com.ghidramcpng.tools.ToolHelpers.MAX_COMMENT_LENGTH;
 public class WriteTools {
 
     public static final int TOOL_COUNT = ToolHelpers.countEndpoints(WriteTools.class);
+
+    /** Timeout for the diagnostic decompile used to explain a failed variable rename. */
+    private static final int DIAGNOSTIC_DECOMPILE_SECONDS = 30;
 
     private final ProgramManager mgr;
     private final RulesEngine rules;
@@ -117,11 +124,12 @@ public class WriteTools {
         rules.validate("variable_name", newName);
 
         Program program = openProgram(programName);
-        runTransaction(program, "Rename variable: " + variableName + " -> " + newName, () -> {
-            Function func = findFunction(program, funcRef);
-            Variable found = findVariable(func, variableName);
-            found.setName(newName, SourceType.USER_DEFINED);
-        });
+        Function func = findFunction(program, funcRef);
+        // Resolve (and diagnose failures) before opening the write transaction so the
+        // diagnostic decompile in findVariable does not run inside it.
+        Variable found = findVariable(program, func, variableName);
+        runTransaction(program, "Rename variable: " + variableName + " -> " + newName,
+                () -> found.setName(newName, SourceType.USER_DEFINED));
 
         return new RenameVariableResponse(true, newName);
     }
@@ -785,7 +793,7 @@ public class WriteTools {
                 "or pass a 0x-prefixed hex address.");
     }
 
-    private static Variable findVariable(Function func, String name) {
+    private static Variable findVariable(Program program, Function func, String name) {
         for (Parameter p : func.getParameters()) {
             if (p.getName().equals(name)) {
                 return p;
@@ -796,10 +804,46 @@ public class WriteTools {
                 return v;
             }
         }
+        // Not a committed parameter or stack local. Decide which of the two distinct
+        // failures this is so the error tells the caller exactly what went wrong.
+        if (decompilerShowsVariable(program, func, name)) {
+            throw new IllegalArgumentException(
+                    "Variable '" + name + "' in function '" + func.getName() + "' is a decompiler-derived " +
+                    "temporary (it maps to a register or intermediate value, not a stored stack/parameter " +
+                    "variable), so it cannot be renamed. Only parameters and stack locals — the names listed " +
+                    "by get_function_variables — are renameable. To annotate this temporary, use set_comment " +
+                    "at its defining address instead.");
+        }
         throw new IllegalArgumentException(
                 "Variable '" + name + "' not found in function '" + func.getName() + "'. " +
-                "Names are case-sensitive. Use get_function_variables to list all " +
+                "Names are case-sensitive. Use get_function_variables to list the renameable " +
                 "parameters and locals with their exact names.");
+    }
+
+    /**
+     * Best-effort check for whether the decompiler displays a variable named {@code name} in
+     * {@code func}. Used only to produce a precise error when a rename target is not a committed
+     * stack/parameter variable: a decompiler temporary (piVar4, uVar11, …) is shown but cannot be
+     * renamed, versus a name that simply does not exist. Returns false if decompilation fails.
+     */
+    private static boolean decompilerShowsVariable(Program program, Function func, String name) {
+        try {
+            DecompileResults results =
+                    ToolHelpers.decompileFreshWithResults(program, func, DIAGNOSTIC_DECOMPILE_SECONDS);
+            HighFunction highFunction = results.getHighFunction();
+            if (highFunction == null) {
+                return false;
+            }
+            Iterator<HighSymbol> symbols = highFunction.getLocalSymbolMap().getSymbols();
+            while (symbols.hasNext()) {
+                if (name.equals(symbols.next().getName())) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (RuntimeException e) {
+            return false;
+        }
     }
 
     public record RenameFunctionRequest(

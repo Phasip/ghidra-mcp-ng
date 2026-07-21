@@ -456,12 +456,14 @@ public class ReadTools {
         public GetDisassemblyResponse getDisassembly(
             @Parameter(description = "Name of the open program to analyze. Use list_project_files to get valid values.", required = true)
             @QueryParam("program") String programName,
-            @Parameter(description = "Start address in 0x-prefixed hex, e.g. 0x00401000.", required = true)
+            @Parameter(description = "Start location: a 0x-prefixed hex address (e.g. 0x00401000) or a symbol/function name (case-sensitive). A name resolves to that symbol's address.", required = true)
             @QueryParam("address") String addressText,
-            @Parameter(description = "Number of instructions to return.")
+            @Parameter(description = "Number of instructions to return. If more instructions follow the returned window, the response 'truncated' flag is true and 'next_address' points to the first instruction not returned.")
             @QueryParam("instructions") @DefaultValue("20") int instructions) {
         Program program = openProgram(programName);
-        Address start = toAddress(program, requireText(addressText, "address"));
+        // Accept either a 0x-prefixed address or a symbol/function name so this endpoint is
+        // consistent with the name-or-address tools and does not force a separate lookup call.
+        Address start = resolveDisassemblyStart(program, requireText(addressText, "address"));
         int validatedInstructions = requirePositive(instructions, "instructions");
         if (validatedInstructions > 2000) {
             throw new IllegalArgumentException(
@@ -472,9 +474,9 @@ public class ReadTools {
         Instruction current = program.getListing().getInstructionAt(start);
         if (current == null) {
             throw new IllegalArgumentException(
-                "No instruction starts at address " + addressText +
-                ". Provide an exact instruction address (use 0x prefix). " +
-                "Use get_address_info first if you need segment/function context.");
+                "No instruction starts at address " + start.toString() +
+                " (resolved from '" + addressText + "'). Provide an exact instruction address (use 0x prefix) " +
+                "or a function/symbol name. Use get_address_info first if you need segment/function context.");
         }
 
         List<DisassemblyLine> lines = new ArrayList<>();
@@ -489,7 +491,22 @@ public class ReadTools {
             current = current.getNext();
         }
 
-        return new GetDisassemblyResponse(start, lines, lines.size());
+        // If a next instruction remains, the caller's window did not reach the end — report it so
+        // a short default window is never mistaken for "there are no more instructions".
+        boolean truncated = current != null;
+        Address nextAddress = current != null ? current.getAddress() : null;
+        return new GetDisassemblyResponse(start, lines, lines.size(), truncated, nextAddress);
+        }
+
+        /**
+         * Resolve a get_disassembly start location. A 0x-prefixed value is parsed as a hex
+         * address; anything else is resolved as a case-sensitive symbol/function name.
+         */
+        private static Address resolveDisassemblyStart(Program program, String addressOrName) {
+            if (addressOrName.startsWith("0x") || addressOrName.startsWith("0X")) {
+                return toAddress(program, addressOrName);
+            }
+            return findSymbolAddress(program, addressOrName);
         }
 
     @GET
@@ -813,8 +830,8 @@ public class ReadTools {
                 fields);
     }
 
-    public XrefsResponse getXrefsTo(String programName, String addressOrName) {
-        return getXrefsTo(programName, addressOrName, null, null, null);
+    public XrefsResponse getXrefsTo(String programName, String nameOrAddress) {
+        return getXrefsTo(programName, nameOrAddress, null, null, null);
     }
 
     @GET
@@ -827,8 +844,8 @@ public class ReadTools {
     public XrefsResponse getXrefsTo(
             @Parameter(description = "Name of the open program to analyze. Use list_project_files to see available programs.", required = true)
             @QueryParam("program") String programName,
-            @Parameter(description = "Target: a 0x-prefixed hex address (e.g. 0x00401000) or any symbol name (case-sensitive) — function, global, label, etc.", required = true)
-            @QueryParam("address_or_name") String addressOrName,
+            @Parameter(description = "Target: a function/symbol name (case-sensitive) — function, global, label, etc. — or a 0x-prefixed hex address (e.g. 0x00401000).", required = true)
+            @QueryParam("name_or_address") String nameOrAddress,
             @Parameter(description = "Optional reference type filter(s), e.g. CALL, COMPUTED_CALL, DATA, READ, WRITE. Can be repeated or comma-separated.")
             @QueryParam("ref_types") List<String> refTypes,
             @Parameter(description = "Optional lower bound (inclusive) for xref source addresses.")
@@ -836,7 +853,7 @@ public class ReadTools {
             @Parameter(description = "Optional upper bound (inclusive) for xref source addresses.")
             @QueryParam("end_address") String endAddress) {
         Program program = openProgram(programName);
-        Address address = findSymbolAddress(program, requireText(addressOrName, "address_or_name"));
+        Address address = findSymbolAddress(program, requireText(nameOrAddress, "name_or_address"));
         AddressRange fromRange = resolveAddressRange(program, startAddress, endAddress,
                 "start_address", "end_address");
         Set<String> requestedTypes = normalizeRefTypeFilter(refTypes);
@@ -1381,7 +1398,7 @@ public class ReadTools {
                 ? requireBodyStringList(args, "ref_types") : List.of();
                 yield getXrefsTo(
                 requireBodyText(args, "program"),
-                requireBodyText(args, "address_or_name"),
+                requireBodyText(args, "name_or_address"),
                 refTypes,
                 args.has("start_address") && !args.get("start_address").isJsonNull() ? args.get("start_address").getAsString() : null,
                 args.has("end_address") && !args.get("end_address").isJsonNull() ? args.get("end_address").getAsString() : null);
@@ -1573,7 +1590,11 @@ public class ReadTools {
             @Schema(type = "string", description = "Address requested for disassembly start.")
             Address start_address,
             List<DisassemblyLine> lines,
-            int count) {
+            int count,
+            @Schema(description = "True when more instructions follow the returned window (the 'instructions' limit was reached before the end of mapped code). Re-request from 'next_address' to continue.")
+            boolean truncated,
+            @Schema(type = "string", description = "Address of the first instruction not included, or null when the disassembly ran to the end of mapped code.")
+            Address next_address) {
         }
 
         public record DisassemblyLine(

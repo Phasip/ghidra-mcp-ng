@@ -112,7 +112,7 @@ List cross-references to an address or symbol, with optional ref-type and source
 | Parameter | Type | Required | Default | Description |
 |-----------|------|:--------:|---------|-------------|
 | `program` | string | yes |  | Name of the open program to analyze. Use list_project_files to see available programs. |
-| `address_or_name` | string | yes |  | Target: a 0x-prefixed hex address (e.g. 0x00401000) or any symbol name (case-sensitive) — function, global, label, etc. |
+| `name_or_address` | string | yes |  | Target: a function/symbol name (case-sensitive) — function, global, label, etc. — or a 0x-prefixed hex address (e.g. 0x00401000). |
 | `ref_types` | array of string |  |  | Optional reference type filter(s), e.g. CALL, COMPUTED_CALL, DATA, READ, WRITE. Can be repeated or comma-separated. |
 | `start_address` | string |  |  | Optional lower bound (inclusive) for xref source addresses. |
 | `end_address` | string |  |  | Optional upper bound (inclusive) for xref source addresses. |
@@ -357,8 +357,8 @@ Get disassembly lines starting at an address for a fixed number of instructions.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|:--------:|---------|-------------|
 | `program` | string | yes |  | Name of the open program to analyze. Use list_project_files to get valid values. |
-| `address` | string | yes |  | Start address in 0x-prefixed hex, e.g. 0x00401000. |
-| `instructions` | integer (int32) |  | 20 | Number of instructions to return. |
+| `address` | string | yes |  | Start location: a 0x-prefixed hex address (e.g. 0x00401000) or a symbol/function name (case-sensitive). A name resolves to that symbol's address. |
+| `instructions` | integer (int32) |  | 20 | Number of instructions to return. If more instructions follow the returned window, the response 'truncated' flag is true and 'next_address' points to the first instruction not returned. |
 
 ### `get_program_info`
 
