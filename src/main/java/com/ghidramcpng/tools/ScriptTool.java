@@ -139,7 +139,8 @@ public class ScriptTool {
     @Path("/add_script")
     @Operation(
             operationId = "add_script",
-            summary = "Copy an existing script file into the Ghidra user script directory, making it available to run_script."
+            summary = "Copy an existing script file into the Ghidra user script directory, making it available to run_script. "
+                    + "This takes a snapshot: later edits to the source file are NOT picked up — call add_script again after every edit."
     )
     @ApiResponse(responseCode = "200", description = "Script add result",
             content = @Content(schema = @Schema(implementation = AddScriptResponse.class)))

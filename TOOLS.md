@@ -57,7 +57,7 @@ Search for functions by name substring (case-insensitive). Returns name and addr
 |-----------|------|:--------:|---------|-------------|
 | `program` | string | yes |  | Name of the open program to analyze. Use list_project_files to get valid values. |
 | `query` | string |  |  | Substring to search for (case-insensitive). Pass an empty string to list all functions. |
-| `limit` | integer (int32) |  | 100 | Maximum number of items to return. |
+| `limit` | integer (int32) |  | 100 | Maximum number of items to return (max 1000). |
 | `start_address` | string |  |  | Optional start address (inclusive) for function entry-point filtering. |
 | `end_address` | string |  |  | Optional end address (inclusive) for function entry-point filtering. |
 
@@ -104,6 +104,7 @@ List cross-references originating from an address with optional destination-rang
 | `ref_types` | array of string |  |  | Optional reference type filter(s), e.g. CALL, COMPUTED_CALL, DATA, READ, WRITE. Can be repeated or comma-separated. |
 | `start_address` | string |  |  | Optional lower bound (inclusive) for destination addresses. |
 | `end_address` | string |  |  | Optional upper bound (inclusive) for destination addresses. |
+| `limit` | integer (int32) |  | 500 | Maximum number of cross-references to return (max 5000). 'count' is the size of this page; 'truncated' is true when further matches were dropped. |
 
 ### `get_xrefs_to`
 
@@ -116,6 +117,7 @@ List cross-references to an address or symbol, with optional ref-type and source
 | `ref_types` | array of string |  |  | Optional reference type filter(s), e.g. CALL, COMPUTED_CALL, DATA, READ, WRITE. Can be repeated or comma-separated. |
 | `start_address` | string |  |  | Optional lower bound (inclusive) for xref source addresses. |
 | `end_address` | string |  |  | Optional upper bound (inclusive) for xref source addresses. |
+| `limit` | integer (int32) |  | 500 | Maximum number of cross-references to return (max 5000). 'count' is the size of this page; 'truncated' is true when further matches were dropped. Narrow with ref_types or start_address/end_address rather than raising this. |
 
 ## Data types
 
@@ -144,7 +146,7 @@ Search for data types by name (case-insensitive). Pass an empty string to list a
 |-----------|------|:--------:|---------|-------------|
 | `program` | string | yes |  | Name of the open program to analyze. Use list_project_files to get valid values. |
 | `query` | string |  |  | Substring filter applied to data type names (case-insensitive). Pass an empty string to list all data types. |
-| `limit` | integer (int32) |  | 50 | Maximum number of items to return. |
+| `limit` | integer (int32) |  | 50 | Maximum number of items to return (max 500). |
 
 ## Strings
 
@@ -155,15 +157,15 @@ Search for defined strings across the program listing.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|:--------:|---------|-------------|
 | `program` | string | yes |  | Name of the open program to analyze. Use list_project_files to see available programs. |
-| `filter` | string |  |  | Optional substring filter applied to names or values. |
+| `query` | string |  |  | Optional substring match (case-insensitive) applied to string values. Pass an empty string or omit to list all defined strings. |
 | `offset` | integer (int32) |  | 0 | 0-based item offset for pagination. O(n) cost — avoid large offsets on large programs. |
-| `limit` | integer (int32) |  | 200 | Maximum number of items to return. |
+| `limit` | integer (int32) |  | 200 | Maximum number of items to return (max 1000). 'count' is the size of this page, not the total number of matches. |
 
 ## Write operations
 
 ### `add_script`
 
-Copy an existing script file into the Ghidra user script directory, making it available to run_script.
+Copy an existing script file into the Ghidra user script directory, making it available to run_script. This takes a snapshot: later edits to the source file are NOT picked up — call add_script again after every edit.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|:--------:|---------|-------------|
@@ -287,7 +289,7 @@ Set a function's return type, calling convention, and parameter list.
 | `program` | string | yes |  | Program name |
 | `name_or_address` | string | yes |  | Function name or hex address |
 | `return_type` | string | yes |  | Return type name |
-| `parameters` | array of object |  |  | Parameter descriptors |
+| `parameters` | array of object {name, type_name} |  |  | Ordered parameter list; each entry is {name, type_name}. Replaces the function's existing parameters — omit or pass an empty array for a no-argument function. |
 | `calling_convention` | string |  |  | Calling convention name (e.g. __cdecl, __stdcall, __fastcall, __thiscall). Use get_calling_conventions to see valid values for this program. |
 
 ### `set_parameter_type`
@@ -358,7 +360,7 @@ Get disassembly lines starting at an address for a fixed number of instructions.
 |-----------|------|:--------:|---------|-------------|
 | `program` | string | yes |  | Name of the open program to analyze. Use list_project_files to get valid values. |
 | `address` | string | yes |  | Start location: a 0x-prefixed hex address (e.g. 0x00401000) or a symbol/function name (case-sensitive). A name resolves to that symbol's address. |
-| `instructions` | integer (int32) |  | 20 | Number of instructions to return. If more instructions follow the returned window, the response 'truncated' flag is true and 'next_address' points to the first instruction not returned. |
+| `limit` | integer (int32) |  | 20 | Maximum number of instructions to return (max 2000). If more instructions follow the returned window, the response 'truncated' flag is true and 'next_address' points to the first instruction not returned. |
 
 ### `get_program_info`
 
@@ -386,7 +388,7 @@ List named global symbols grouped by functions, data, and labels, with optional 
 | `section` | string |  |  | Optional memory block/section name filter, e.g. .data or .bss. |
 | `start_address` | string |  |  | Optional start address (inclusive) for symbol address filtering. |
 | `end_address` | string |  |  | Optional end address (inclusive) for symbol address filtering. |
-| `limit` | integer (int32) |  | 500 | Maximum number of symbols to return across all groups. |
+| `limit` | integer (int32) |  | 500 | Maximum number of symbols to return across all groups (max 5000). |
 
 ### `list_scripts`
 
@@ -417,7 +419,7 @@ Search initialized memory for a hex byte pattern. Supports wildcards with ?? and
 | `hex_pattern` | string | yes |  | Hex byte pattern, e.g. 'FF ?? 48' or '68 4E 58 50 20'. |
 | `start_address` | string |  |  | Optional start address (inclusive) for the search range. |
 | `end_address` | string |  |  | Optional end address (inclusive) for the search range. |
-| `limit` | integer (int32) |  | 100 | Maximum number of hits to return. |
+| `limit` | integer (int32) |  | 100 | Maximum number of hits to return (max 2000). |
 
 ### `search_constant_references`
 
@@ -427,7 +429,7 @@ Find all instructions that use a specific constant as an immediate operand. Usef
 |-----------|------|:--------:|---------|-------------|
 | `program` | string | yes |  | Name of the open program to analyze. Use list_project_files to see available programs. |
 | `value` | string | yes |  | Constant to search for. Accepts decimal (e.g. 65744), 0x-prefixed hex (e.g. 0x100D0), or a negative value treated as its unsigned bit pattern (e.g. -1 matches 0xFFFFFFFFFFFFFFFF). |
-| `limit` | integer (int32) |  | 200 | Maximum number of hits to return. |
+| `limit` | integer (int32) |  | 200 | Maximum number of hits to return (max 2000). |
 
 ### `search_instructions`
 
@@ -439,5 +441,5 @@ Search decoded instructions for a byte-pattern prefix (supports ?? wildcards) wi
 | `pattern` | string | yes |  | Instruction byte pattern, e.g. 'FF ?? 48'. |
 | `start_address` | string |  |  | Optional start address (inclusive) for instruction filtering. |
 | `end_address` | string |  |  | Optional end address (inclusive) for instruction filtering. |
-| `limit` | integer (int32) |  | 100 | Maximum number of hits to return. |
+| `limit` | integer (int32) |  | 100 | Maximum number of hits to return (max 2000). |
 

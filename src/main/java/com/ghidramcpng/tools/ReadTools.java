@@ -75,6 +75,10 @@ public class ReadTools {
 
     private static final String SERVER_VERSION = loadVersion();
 
+    /** Default and ceiling for the xref tools' 'limit'; shared by both and by the batch dispatch. */
+    private static final int DEFAULT_XREF_LIMIT = 500;
+    private static final int MAX_XREF_LIMIT = 5000;
+
     private final ProgramManager mgr;
     private final int decompileTimeoutSeconds;
     /** Batch dispatch target for the write tools; batch_tool_call is the only user. */
@@ -155,7 +159,7 @@ public class ReadTools {
             @QueryParam("start_address") String startAddress,
             @Parameter(description = "Optional end address (inclusive) for symbol address filtering.")
             @QueryParam("end_address") String endAddress,
-            @Parameter(description = "Maximum number of symbols to return across all groups.")
+            @Parameter(description = "Maximum number of symbols to return across all groups (max 5000).")
             @QueryParam("limit") @DefaultValue("500") int limit) {
         Program program = openProgram(programName);
         int validatedLimit = requireLimit(limit, 5000, "limit");
@@ -488,18 +492,13 @@ public class ReadTools {
             @QueryParam("program") String programName,
             @Parameter(description = "Start location: a 0x-prefixed hex address (e.g. 0x00401000) or a symbol/function name (case-sensitive). A name resolves to that symbol's address.", required = true)
             @QueryParam("address") String addressText,
-            @Parameter(description = "Number of instructions to return. If more instructions follow the returned window, the response 'truncated' flag is true and 'next_address' points to the first instruction not returned.")
-            @QueryParam("instructions") @DefaultValue("20") int instructions) {
+            @Parameter(description = "Maximum number of instructions to return (max 2000). If more instructions follow the returned window, the response 'truncated' flag is true and 'next_address' points to the first instruction not returned.")
+            @QueryParam("limit") @DefaultValue("20") int limit) {
         Program program = openProgram(programName);
         // Accept either a 0x-prefixed address or a symbol/function name so this endpoint is
         // consistent with the name-or-address tools and does not force a separate lookup call.
         Address start = resolveDisassemblyStart(program, requireText(addressText, "address"));
-        int validatedInstructions = requirePositive(instructions, "instructions");
-        if (validatedInstructions > 2000) {
-            throw new IllegalArgumentException(
-                "Invalid value for 'instructions': " + validatedInstructions +
-                ". Maximum supported value is 2000.");
-        }
+        int validatedLimit = requireLimit(limit, 2000, "limit");
 
         Instruction current = program.getListing().getInstructionAt(start);
         if (current == null) {
@@ -510,7 +509,7 @@ public class ReadTools {
         }
 
         List<DisassemblyLine> lines = new ArrayList<>();
-        while (current != null && lines.size() < validatedInstructions) {
+        while (current != null && lines.size() < validatedLimit) {
             Function containing = program.getFunctionManager().getFunctionContaining(current.getAddress());
             lines.add(new DisassemblyLine(
                 current.getAddress(),
@@ -630,7 +629,7 @@ public class ReadTools {
             @QueryParam("program") String programName,
             @Parameter(description = "Substring to search for (case-insensitive). Pass an empty string to list all functions.")
             @QueryParam("query") @DefaultValue("") String query,
-            @Parameter(description = "Maximum number of items to return.")
+            @Parameter(description = "Maximum number of items to return (max 1000).")
             @QueryParam("limit") @DefaultValue("100") int limit,
             @Parameter(description = "Optional start address (inclusive) for function entry-point filtering.")
             @QueryParam("start_address") String startAddress,
@@ -667,7 +666,7 @@ public class ReadTools {
             @QueryParam("program") String programName,
             @Parameter(description = "Substring filter applied to data type names (case-insensitive). Pass an empty string to list all data types.")
             @QueryParam("query") @DefaultValue("") String query,
-            @Parameter(description = "Maximum number of items to return.")
+            @Parameter(description = "Maximum number of items to return (max 500).")
             @QueryParam("limit") @DefaultValue("50") int limit) {
         Program program = openProgram(programName);
         int validatedLimit = requireLimit(limit, 500, "limit");
@@ -712,11 +711,11 @@ public class ReadTools {
     public SearchDefinedStringsResponse searchDefinedStrings(
             @Parameter(description = "Name of the open program to analyze. Use list_project_files to see available programs.", required = true)
             @QueryParam("program") String programName,
-            @Parameter(description = "Optional substring filter applied to names or values.")
-            @QueryParam("filter") String filter,
+            @Parameter(description = "Optional substring match (case-insensitive) applied to string values. Pass an empty string or omit to list all defined strings.")
+            @QueryParam("query") String query,
             @Parameter(description = "0-based item offset for pagination. O(n) cost — avoid large offsets on large programs.")
             @QueryParam("offset") @DefaultValue("0") int offset,
-            @Parameter(description = "Maximum number of items to return.")
+            @Parameter(description = "Maximum number of items to return (max 1000). 'count' is the size of this page, not the total number of matches.")
             @QueryParam("limit") @DefaultValue("200") int limit) {
         Program program = openProgram(programName);
         int validatedOffset = requireNonNegative(offset, "offset");
@@ -730,7 +729,7 @@ public class ReadTools {
                 continue;
             }
             String value = data.getValue().toString();
-            if (filter != null && !value.toLowerCase().contains(filter.toLowerCase())) {
+            if (query != null && !value.toLowerCase().contains(query.toLowerCase())) {
                 continue;
             }
             if (skip > 0) {
@@ -760,7 +759,7 @@ public class ReadTools {
             @QueryParam("start_address") String startAddress,
             @Parameter(description = "Optional end address (inclusive) for the search range.")
             @QueryParam("end_address") String endAddress,
-            @Parameter(description = "Maximum number of hits to return.")
+            @Parameter(description = "Maximum number of hits to return (max 2000).")
             @QueryParam("limit") @DefaultValue("100") int limit) {
         Program program = openProgram(programName);
         int validatedLimit = requireLimit(limit, 2000, "limit");
@@ -801,7 +800,7 @@ public class ReadTools {
             @QueryParam("start_address") String startAddress,
             @Parameter(description = "Optional end address (inclusive) for instruction filtering.")
             @QueryParam("end_address") String endAddress,
-            @Parameter(description = "Maximum number of hits to return.")
+            @Parameter(description = "Maximum number of hits to return (max 2000).")
             @QueryParam("limit") @DefaultValue("100") int limit) {
         Program program = openProgram(programName);
         int validatedLimit = requireLimit(limit, 2000, "limit");
@@ -861,7 +860,7 @@ public class ReadTools {
     }
 
     public XrefsResponse getXrefsTo(String programName, String nameOrAddress) {
-        return getXrefsTo(programName, nameOrAddress, null, null, null);
+        return getXrefsTo(programName, nameOrAddress, null, null, null, DEFAULT_XREF_LIMIT);
     }
 
     @GET
@@ -881,19 +880,29 @@ public class ReadTools {
             @Parameter(description = "Optional lower bound (inclusive) for xref source addresses.")
             @QueryParam("start_address") String startAddress,
             @Parameter(description = "Optional upper bound (inclusive) for xref source addresses.")
-            @QueryParam("end_address") String endAddress) {
+            @QueryParam("end_address") String endAddress,
+            @Parameter(description = "Maximum number of cross-references to return (max 5000). 'count' is the size of this page; 'truncated' is true when further matches were dropped. Narrow with ref_types or start_address/end_address rather than raising this.")
+            @QueryParam("limit") @DefaultValue("500") int limit) {
         Program program = openProgram(programName);
+        int validatedLimit = requireLimit(limit, MAX_XREF_LIMIT, "limit");
         Address address = findSymbolAddress(program, requireText(nameOrAddress, "name_or_address"));
         AddressRange fromRange = resolveAddressRange(program, startAddress, endAddress,
                 "start_address", "end_address");
         Set<String> requestedTypes = normalizeRefTypeFilter(refTypes);
         List<XrefEntry> xrefs = new ArrayList<>();
+        boolean truncated = false;
         for (Reference reference : program.getReferenceManager().getReferencesTo(address)) {
             if (fromRange != null && !isWithinRange(reference.getFromAddress(), fromRange)) {
                 continue;
             }
             if (!matchesRequestedRefType(reference, requestedTypes)) {
                 continue;
+            }
+            // Checked after the filters so 'truncated' means "a matching xref was dropped",
+            // never "the page happened to fill exactly".
+            if (xrefs.size() >= validatedLimit) {
+                truncated = true;
+                break;
             }
             xrefs.add(XrefEntry.from(program, reference));
         }
@@ -902,11 +911,11 @@ public class ReadTools {
         List<IndirectCallerEntry> indirectCallers = targetFunction != null
                 ? inferIndirectCallers(program, address)
                 : List.of();
-        return XrefsResponse.fromEntries(xrefs, indirectCallers);
+        return XrefsResponse.fromEntries(xrefs, truncated, indirectCallers);
     }
 
     public XrefsResponse getXrefsFrom(String programName, String addressText) {
-        return getXrefsFrom(programName, addressText, null, null, null);
+        return getXrefsFrom(programName, addressText, null, null, null, DEFAULT_XREF_LIMIT);
     }
 
     @GET
@@ -924,13 +933,17 @@ public class ReadTools {
             @Parameter(description = "Optional lower bound (inclusive) for destination addresses.")
             @QueryParam("start_address") String startAddress,
             @Parameter(description = "Optional upper bound (inclusive) for destination addresses.")
-            @QueryParam("end_address") String endAddress) {
+            @QueryParam("end_address") String endAddress,
+            @Parameter(description = "Maximum number of cross-references to return (max 5000). 'count' is the size of this page; 'truncated' is true when further matches were dropped.")
+            @QueryParam("limit") @DefaultValue("500") int limit) {
         Program program = openProgram(programName);
+        int validatedLimit = requireLimit(limit, MAX_XREF_LIMIT, "limit");
         var address = toAddress(program, requireText(addressText, "address"));
         AddressRange toRange = resolveAddressRange(program, startAddress, endAddress,
                 "start_address", "end_address");
         Set<String> requestedTypes = normalizeRefTypeFilter(refTypes);
         List<XrefEntry> xrefs = new ArrayList<>();
+        boolean truncated = false;
         for (Reference reference : program.getReferenceManager().getReferencesFrom(address)) {
             if (toRange != null && !isWithinRange(reference.getToAddress(), toRange)) {
                 continue;
@@ -938,9 +951,13 @@ public class ReadTools {
             if (!matchesRequestedRefType(reference, requestedTypes)) {
                 continue;
             }
+            if (xrefs.size() >= validatedLimit) {
+                truncated = true;
+                break;
+            }
             xrefs.add(XrefEntry.from(program, reference));
         }
-        return XrefsResponse.fromEntries(xrefs, List.of());
+        return XrefsResponse.fromEntries(xrefs, truncated, List.of());
     }
 
     @GET
@@ -975,7 +992,7 @@ public class ReadTools {
             @QueryParam("program") String programName,
             @Parameter(description = "Constant to search for. Accepts decimal (e.g. 65744), 0x-prefixed hex (e.g. 0x100D0), or a negative value treated as its unsigned bit pattern (e.g. -1 matches 0xFFFFFFFFFFFFFFFF).", required = true)
             @QueryParam("value") String valueText,
-            @Parameter(description = "Maximum number of hits to return.")
+            @Parameter(description = "Maximum number of hits to return (max 2000).")
             @QueryParam("limit") @DefaultValue("200") int limit) {
         Program program = openProgram(programName);
         int validatedLimit = requireLimit(limit, 2000, "limit");
@@ -1402,8 +1419,8 @@ public class ReadTools {
             case "get_disassembly" -> getDisassembly(
                 requireBodyText(args, "program"),
                 requireBodyText(args, "address"),
-                args.has("instructions") && !args.get("instructions").isJsonNull()
-                    ? args.get("instructions").getAsInt() : 20);
+                args.has("limit") && !args.get("limit").isJsonNull()
+                    ? args.get("limit").getAsInt() : 20);
             case "read_data" -> readData(
                 requireBodyText(args, "program"),
                 requireBodyText(args, "address"),
@@ -1431,7 +1448,8 @@ public class ReadTools {
                 requireBodyText(args, "name_or_address"),
                 refTypes,
                 args.has("start_address") && !args.get("start_address").isJsonNull() ? args.get("start_address").getAsString() : null,
-                args.has("end_address") && !args.get("end_address").isJsonNull() ? args.get("end_address").getAsString() : null);
+                args.has("end_address") && !args.get("end_address").isJsonNull() ? args.get("end_address").getAsString() : null,
+                args.has("limit") && !args.get("limit").isJsonNull() ? args.get("limit").getAsInt() : DEFAULT_XREF_LIMIT);
             }
             case "get_xrefs_from" -> {
             List<String> refTypes = args.has("ref_types") && !args.get("ref_types").isJsonNull()
@@ -1441,7 +1459,8 @@ public class ReadTools {
                 requireBodyText(args, "address"),
                 refTypes,
                 args.has("start_address") && !args.get("start_address").isJsonNull() ? args.get("start_address").getAsString() : null,
-                args.has("end_address") && !args.get("end_address").isJsonNull() ? args.get("end_address").getAsString() : null);
+                args.has("end_address") && !args.get("end_address").isJsonNull() ? args.get("end_address").getAsString() : null,
+                args.has("limit") && !args.get("limit").isJsonNull() ? args.get("limit").getAsInt() : DEFAULT_XREF_LIMIT);
             }
             case "get_program_info" -> getProgramInfo(requireBodyText(args, "program"));
             case "list_globals" -> listGlobals(
@@ -1471,7 +1490,7 @@ public class ReadTools {
                 args.has("limit") && !args.get("limit").isJsonNull() ? args.get("limit").getAsInt() : 50);
             case "search_defined_strings" -> searchDefinedStrings(
                 requireBodyText(args, "program"),
-                args.has("filter") && !args.get("filter").isJsonNull() ? args.get("filter").getAsString() : null,
+                args.has("query") && !args.get("query").isJsonNull() ? args.get("query").getAsString() : null,
                 args.has("offset") && !args.get("offset").isJsonNull() ? args.get("offset").getAsInt() : 0,
                 args.has("limit") && !args.get("limit").isJsonNull() ? args.get("limit").getAsInt() : 200);
             case "search_constant_references" -> searchConstantReferences(
@@ -1544,6 +1563,7 @@ public class ReadTools {
             List<GlobalSymbolEntry> functions,
             List<GlobalSymbolEntry> data,
             List<GlobalSymbolEntry> labels,
+            @Schema(description = "Number of items in this response. This is the size of the returned page, bounded by 'limit' — not the total number of matches in the program.")
             int count,
             boolean truncated) {
         }
@@ -1597,7 +1617,10 @@ public class ReadTools {
     public record DecompileFunctionResponse(String name, Address address, String decompiled) {
     }
 
-    public record SearchFunctionsResponse(List<FunctionRef> functions, int count) {
+    public record SearchFunctionsResponse(
+            List<FunctionRef> functions,
+            @Schema(description = "Number of items in this response. This is the size of the returned page, bounded by 'limit' — not the total number of matches in the program.")
+            int count) {
     }
 
     public record GetCallingConventionsResponse(
@@ -1607,10 +1630,16 @@ public class ReadTools {
             String default_convention) {
     }
 
-    public record SearchDataTypesResponse(List<DataTypeEntry> data_types, int count) {
+    public record SearchDataTypesResponse(
+            List<DataTypeEntry> data_types,
+            @Schema(description = "Number of items in this response. This is the size of the returned page, bounded by 'limit' — not the total number of matches in the program.")
+            int count) {
     }
 
-    public record SearchDefinedStringsResponse(List<StringEntry> strings, int count) {
+    public record SearchDefinedStringsResponse(
+            List<StringEntry> strings,
+            @Schema(description = "Number of items in this response. This is the size of the returned page, bounded by 'limit' — not the total number of matches in the program.")
+            int count) {
     }
 
         public record ReadDataResponse(
@@ -1638,7 +1667,7 @@ public class ReadTools {
             Address start_address,
             List<DisassemblyLine> lines,
             int count,
-            @Schema(description = "True when more instructions follow the returned window (the 'instructions' limit was reached before the end of mapped code). Re-request from 'next_address' to continue.")
+            @Schema(description = "True when more instructions follow the returned window ('limit' was reached before the end of mapped code). Re-request from 'next_address' to continue.")
             boolean truncated,
             @Schema(type = "string", description = "Address of the first instruction not included, or null when the disassembly ran to the end of mapped code.")
             Address next_address) {
@@ -1665,6 +1694,7 @@ public class ReadTools {
         public record SearchBytesResponse(
             String pattern,
             List<PatternHit> hits,
+            @Schema(description = "Number of items in this response. This is the size of the returned page, bounded by 'limit' — not the total number of matches in the program.")
             int count,
             boolean truncated) {
         }
@@ -1672,6 +1702,7 @@ public class ReadTools {
         public record SearchInstructionsResponse(
             String pattern,
             List<PatternHit> hits,
+            @Schema(description = "Number of items in this response. This is the size of the returned page, bounded by 'limit' — not the total number of matches in the program.")
             int count,
             boolean truncated) {
         }
@@ -1682,16 +1713,21 @@ public class ReadTools {
 
         public record XrefsResponse(
             List<XrefEntry> xrefs,
+            @Schema(description = "Number of cross-references in this response, not the total in the program.")
             int count,
+            @Schema(description = "True when 'limit' was reached and further matching cross-references were not returned.")
+            boolean truncated,
             List<XrefEntry> call_refs,
             List<XrefEntry> computed_call_refs,
             List<XrefEntry> data_refs,
             List<XrefEntry> read_refs,
             List<XrefEntry> write_refs,
             List<XrefEntry> other_refs,
+            @Schema(description = "Inferred indirect-call candidates. Derived from the full reference set, so this list is not subject to 'limit'.")
             List<IndirectCallerEntry> indirect_calls) {
 
-        public static XrefsResponse fromEntries(List<XrefEntry> xrefs, List<IndirectCallerEntry> indirectCalls) {
+        public static XrefsResponse fromEntries(List<XrefEntry> xrefs, boolean truncated,
+                List<IndirectCallerEntry> indirectCalls) {
             List<XrefEntry> callRefs = new ArrayList<>();
             List<XrefEntry> computedCallRefs = new ArrayList<>();
             List<XrefEntry> dataRefs = new ArrayList<>();
@@ -1714,6 +1750,7 @@ public class ReadTools {
             return new XrefsResponse(
                 xrefs,
                 xrefs.size(),
+                truncated,
                 callRefs,
                 computedCallRefs,
                 dataRefs,
@@ -1776,6 +1813,7 @@ public class ReadTools {
             long value,
             @Schema(description = "Instructions that reference the constant as an immediate operand.")
             List<ConstantHit> hits,
+            @Schema(description = "Number of items in this response. This is the size of the returned page, bounded by 'limit' — not the total number of matches in the program.")
             int count) {
     }
 

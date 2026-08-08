@@ -1,5 +1,6 @@
 package com.ghidramcpng.tools;
 
+import com.ghidramcpng.mcp.ApiSupport;
 import com.ghidramcpng.program.ProgramManager;
 import com.ghidramcpng.rules.RulesEngine;
 import com.google.gson.JsonArray;
@@ -217,12 +218,13 @@ public class WriteTools {
         for (int i = 0; i < paramsJson.size(); i++) {
             if (!paramsJson.get(i).isJsonObject()) {
                 throw new IllegalArgumentException(
-                        "'parameters[" + i + "]' must be a JSON object with 'name' and 'type' fields, got: " +
+                        "'parameters[" + i + "]' must be a JSON object with 'name' and 'type_name' fields, got: " +
                         paramsJson.get(i));
             }
             JsonObject parameter = paramsJson.get(i).getAsJsonObject();
+            rejectUnknownParameterFields(parameter, i);
             String paramName = requireMaxLength(requireParameterText(parameter, i, "name"), "name", MAX_NAME_LENGTH);
-            String paramType = requireParameterText(parameter, i, "type");
+            String paramType = requireParameterText(parameter, i, "type_name");
             rules.validate("variable_name", paramName);
             DataType dataType = findDataType(program, paramType);
             params.add(createParameter(paramName, dataType, program));
@@ -686,6 +688,31 @@ public class WriteTools {
         }
     }
 
+    /** The only fields a prototype parameter object may carry; anything else is a typo. */
+    private static final List<String> PROTOTYPE_PARAMETER_FIELDS = List.of("name", "type_name");
+
+    /**
+     * Rejects unrecognised keys in a prototype parameter object, mirroring what
+     * UnknownQueryParamFilter does for query parameters. Without it, a misspelled key — most
+     * often 'type', this field's former spelling — reads only as a missing required field and
+     * says nothing about the key that was actually sent.
+     */
+    private static void rejectUnknownParameterFields(JsonObject parameter, int index) {
+        for (String key : parameter.keySet()) {
+            if (PROTOTYPE_PARAMETER_FIELDS.contains(key)) {
+                continue;
+            }
+            StringBuilder message = new StringBuilder()
+                    .append("Unknown field '").append(key).append("' in 'parameters[").append(index)
+                    .append("]'. Valid fields: ").append(String.join(", ", PROTOTYPE_PARAMETER_FIELDS)).append(".");
+            String suggestion = ApiSupport.suggestClosest(key, PROTOTYPE_PARAMETER_FIELDS);
+            if (suggestion != null) {
+                message.append(" Did you mean '").append(suggestion).append("'?");
+            }
+            throw new IllegalArgumentException(message.toString());
+        }
+    }
+
     private static String requireParameterText(JsonObject parameter, int index, String fieldName) {
         if (!parameter.has(fieldName) || parameter.get(fieldName).isJsonNull()) {
             throw new IllegalArgumentException(
@@ -912,8 +939,8 @@ public class WriteTools {
     public record PrototypeParameterRequest(
             @Schema(description = "Parameter name (max 256 chars)", requiredMode = Schema.RequiredMode.REQUIRED)
             String name,
-            @Schema(description = "Parameter type", requiredMode = Schema.RequiredMode.REQUIRED)
-            String type) {
+            @Schema(description = "Data type to assign, e.g. int, char *, MyStruct *", requiredMode = Schema.RequiredMode.REQUIRED)
+            String type_name) {
     }
 
     public record SetFunctionPrototypeRequest(
@@ -923,7 +950,7 @@ public class WriteTools {
             String name_or_address,
             @Schema(description = "Return type name", requiredMode = Schema.RequiredMode.REQUIRED)
             String return_type,
-            @Schema(description = "Parameter descriptors")
+            @Schema(description = "Ordered parameter list; each entry is {name, type_name}. Replaces the function's existing parameters — omit or pass an empty array for a no-argument function.")
             List<PrototypeParameterRequest> parameters,
             @Schema(description = "Calling convention name (e.g. __cdecl, __stdcall, __fastcall, __thiscall). Use get_calling_conventions to see valid values for this program.")
             String calling_convention) {

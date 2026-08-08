@@ -98,11 +98,32 @@ Example `mcp-config.json`:
 
 ### HTTP API (direct access)
 
+There is no dispatcher endpoint — each tool is its own route under `/tool/`, named by its
+`operationId`. Read tools are `GET` with query parameters; write and script tools are `POST` with a
+JSON body.
+
 | Method | Path | Body | Response |
 |---|---|---|---|
-| GET | `/health` | — | `{"status":"ok","version":"...","tools":<n>}` |
-| GET | `/tools` | — | JSON array of tool descriptors |
-| POST | `/call` | `{"tool":"...","arguments":{...}}` | `{"ok":true,"result":{...}}` or `{"ok":false,"error":"..."}` |
+| GET | `/health` | — | `{"status":"ok","version":"...","tools":<n>,"log_file":"..."}` |
+| GET | `/schema` | — | The OpenAPI 3 document describing every tool |
+| GET | `/openapi.json` | — | Identical to `/schema` |
+| GET | `/tool/<operationId>?...` | — | `{"ok":true,"result":{...}}` or `{"ok":false,"error":"..."}` |
+| POST | `/tool/<operationId>` | the tool's arguments as a JSON object | same envelope |
+
+`/schema` is the authoritative tool list — `bridge.py` reads it at startup and derives the MCP tool
+definitions from it. `TOOLS.md` is generated from the same document.
+
+```bash
+curl 'http://127.0.0.1:8192/tool/search_functions?program=/prog.elf&query=init&limit=20'
+curl -X POST http://127.0.0.1:8192/tool/rename_function \
+     -H 'Content-Type: application/json' \
+     -d '{"program":"/prog.elf","name_or_address":"FUN_00401000","new_name":"maybe_init"}'
+```
+
+Every response carries the same envelope: `{"ok":true,"result":{…}}` on success, or
+`{"ok":false,"error":"…"}` with an HTTP 400 for a rejected argument and 500 for anything else. A 500
+also carries an `error_id` that appears next to the full stack trace in `log_file`. An unknown tool
+name is a 404 that names the closest real tool.
 
 ---
 

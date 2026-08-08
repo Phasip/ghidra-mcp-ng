@@ -48,6 +48,11 @@ def _schema_type(spec: dict, schema: dict) -> str:
         items = schema.get("items", {})
         return f"array of {_schema_type(spec, items)}"
     if t == "object":
+        # Name an object's keys inline; otherwise a nested shape like a prototype
+        # parameter reads as a bare "object" and its field names are undiscoverable here.
+        props = schema.get("properties", {})
+        if props:
+            return "object {" + ", ".join(props) + "}"
         return "object"
     if fmt:
         return f"{t} ({fmt})"

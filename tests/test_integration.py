@@ -255,23 +255,34 @@ class TestProgramMetadata:
 # ---------------------------------------------------------------------------
 
 class TestStrings:
-    def test_search_defined_strings_no_filter(
+    def test_search_defined_strings_no_query(
             self, ghidra_server: GhidraClient, prog: str):
         result = ghidra_server.ok("search_defined_strings", {"program": prog})
         assert "strings" in result
         assert "count" in result
 
-    def test_search_defined_strings_with_filter(
+    def test_search_defined_strings_with_query(
             self, ghidra_server: GhidraClient, prog: str):
-        # Filter for our sentinel; may return 0 if Ghidra didn't define the string
+        # Match our sentinel; may return 0 if Ghidra didn't define the string
         result = ghidra_server.ok(
             "search_defined_strings",
-            {"program": prog, "filter": "SENTINEL"}
+            {"program": prog, "query": "SENTINEL"}
         )
         assert "strings" in result
         # If the sentinel string was analysed, verify its value
         for s in result["strings"]:
             assert "SENTINEL" in s.get("value", "").upper()
+
+    def test_search_defined_strings_rejects_old_filter_param(
+            self, ghidra_server: GhidraClient, prog: str):
+        # 'filter' was the old spelling; it is now 'query' everywhere. The rename must
+        # surface as a rejection, never as a silently ignored argument.
+        resp = ghidra_server.call(
+            "search_defined_strings",
+            {"program": prog, "filter": "SENTINEL"},
+        )
+        assert resp["ok"] is False
+        assert "filter" in resp["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +386,7 @@ class TestDecompilation:
         addr = _func_address(ghidra_server, prog, "add")
         result = ghidra_server.ok(
             "get_disassembly",
-            {"program": prog, "address": _hex(addr), "instructions": 5},
+            {"program": prog, "address": _hex(addr), "limit": 5},
         )
         assert result["count"] > 0
         assert len(result["lines"]) == result["count"]
@@ -384,7 +395,7 @@ class TestDecompilation:
         # A name resolves to its symbol address — no separate lookup needed.
         result = ghidra_server.ok(
             "get_disassembly",
-            {"program": prog, "address": "add", "instructions": 5},
+            {"program": prog, "address": "add", "limit": 5},
         )
         assert result["count"] > 0
         assert len(result["lines"]) == result["count"]
@@ -394,10 +405,32 @@ class TestDecompilation:
         # A single-instruction window into a larger function must flag more remain.
         result = ghidra_server.ok(
             "get_disassembly",
-            {"program": prog, "address": _hex(addr), "instructions": 1},
+            {"program": prog, "address": _hex(addr), "limit": 1},
         )
         assert result["truncated"] is True
         assert result["next_address"] is not None
+
+    def test_get_disassembly_rejects_old_instructions_param(
+            self, ghidra_server: GhidraClient, prog: str):
+        # 'instructions' was the old spelling of the window size; every list tool now
+        # spells it 'limit'.
+        addr = _func_address(ghidra_server, prog, "add")
+        resp = ghidra_server.call(
+            "get_disassembly",
+            {"program": prog, "address": _hex(addr), "instructions": 5},
+        )
+        assert resp["ok"] is False
+        assert "instructions" in resp["error"]
+
+    def test_get_disassembly_rejects_limit_over_max(
+            self, ghidra_server: GhidraClient, prog: str):
+        addr = _func_address(ghidra_server, prog, "add")
+        resp = ghidra_server.call(
+            "get_disassembly",
+            {"program": prog, "address": _hex(addr), "limit": 2001},
+        )
+        assert resp["ok"] is False
+        assert "2000" in resp["error"]
 
     def test_unknown_query_param_is_rejected(self, ghidra_server: GhidraClient, prog: str):
         addr = _func_address(ghidra_server, prog, "add")
@@ -487,6 +520,43 @@ class TestXrefs:
             {"program": prog, "name_or_address": _hex(addr), "ref_types": ["CALL"]},
         )
         assert "call_refs" in result
+
+    def test_get_xrefs_to_limit_truncates(self, ghidra_server: GhidraClient, prog: str):
+        # add() is called from at least two sites, so a limit of 1 must drop one and say so.
+        addr = _func_address(ghidra_server, prog, "add")
+        result = ghidra_server.ok(
+            "get_xrefs_to",
+            {"program": prog, "name_or_address": _hex(addr), "limit": 1},
+        )
+        assert result["count"] == 1
+        assert len(result["xrefs"]) == 1
+        assert result["truncated"] is True
+
+    def test_get_xrefs_to_untruncated_when_limit_not_reached(
+            self, ghidra_server: GhidraClient, prog: str):
+        addr = _func_address(ghidra_server, prog, "add")
+        result = ghidra_server.ok(
+            "get_xrefs_to",
+            {"program": prog, "name_or_address": _hex(addr), "limit": 5000},
+        )
+        assert result["truncated"] is False
+
+    def test_get_xrefs_to_rejects_limit_over_max(self, ghidra_server: GhidraClient, prog: str):
+        addr = _func_address(ghidra_server, prog, "add")
+        resp = ghidra_server.call(
+            "get_xrefs_to",
+            {"program": prog, "name_or_address": _hex(addr), "limit": 5001},
+        )
+        assert resp["ok"] is False
+        assert "5000" in resp["error"]
+
+    def test_get_xrefs_from_reports_truncated(self, ghidra_server: GhidraClient, prog: str):
+        addr = _func_address(ghidra_server, prog, "compute")
+        result = ghidra_server.ok(
+            "get_xrefs_from",
+            {"program": prog, "address": _hex(addr)},
+        )
+        assert result["truncated"] is False
 
     def test_get_xrefs_to_includes_indirect_calls_key(self, ghidra_server: GhidraClient, prog: str):
         result = ghidra_server.ok(
@@ -641,9 +711,9 @@ class TestWriteOperations:
              "name_or_address": "compute",
              "return_type": "int",
              "parameters": [
-                 {"name": "x", "type": "int"},
-                 {"name": "y", "type": "int"},
-                 {"name": "mode", "type": "int"},
+                 {"name": "x", "type_name": "int"},
+                 {"name": "y", "type_name": "int"},
+                 {"name": "mode", "type_name": "int"},
              ]},
         )
         assert result["success"] is True
@@ -659,17 +729,33 @@ class TestWriteOperations:
              "parameters": [{"name": "x"}]},
         )
         assert missing_type["ok"] is False
-        assert "parameters[0].type" in missing_type.get("error", "")
+        assert "parameters[0].type_name" in missing_type.get("error", "")
 
         blank_name = ghidra_server.call(
             "set_function_prototype",
             {"program": prog,
              "name_or_address": "compute",
              "return_type": "int",
-             "parameters": [{"name": "   ", "type": "int"}]},
+             "parameters": [{"name": "   ", "type_name": "int"}]},
         )
         assert blank_name["ok"] is False
         assert "parameters[0].name" in blank_name.get("error", "")
+
+    def test_set_function_prototype_names_the_old_type_key(
+            self, ghidra_server: GhidraClient, prog: str):
+        # 'type' was this field's old spelling. Rejecting it is right, but the error must
+        # name the replacement rather than just report a missing field.
+        resp = ghidra_server.call(
+            "set_function_prototype",
+            {"program": prog,
+             "name_or_address": "compute",
+             "return_type": "int",
+             "parameters": [{"name": "x", "type": "int"}]},
+        )
+        assert resp["ok"] is False
+        error = resp.get("error", "")
+        assert "'type'" in error
+        assert "type_name" in error
 
     def test_set_parameter_type(
             self, ghidra_server: GhidraClient, prog: str):

@@ -469,21 +469,55 @@ All three rules should be configurable and default-off per project, since projec
 
 ## 5. Consistency and documentation
 
-### 5.1 Parameter-name divergence (principle 1)
+### 5.1 Parameter-name divergence (principle 1) — **DONE 2026-08-08**
 
 Four separate round-trips were lost to this in one session. Breaking changes are cheap here
-(principle 3) — rename outright, no aliases:
+(principle 3) — renamed outright, no aliases:
 
-| Tool | Today | Should be |
+| Tool | Was | Now |
 |---|---|---|
 | `search_defined_strings` | `filter` | `query` (matches `search_functions`, `search_data_types`) |
-| `read_data` | `item_count` | keep, but reconcile with `instructions` below |
+| `read_data` | `item_count` | **unchanged** — see below |
 | `get_disassembly` | `instructions` | `limit` (matches every other list/search tool) |
 | `set_function_prototype` `parameters[]` | `{name, type}` | `{name, type_name}` (matches `add_struct_field`, `set_parameter_type`) |
-| `get_xrefs_to` / `get_xrefs_from` | no cap | add `limit` + `truncated`, matching the other list tools |
+| `get_xrefs_to` / `get_xrefs_from` | no cap | `limit` (default 500, max 5000) + `truncated` |
 
-Also: `count` in list responses is the returned page size, not a grand total. Either add a `total`
-or document the convention once and apply it everywhere.
+`item_count` stays as it is. It is not a page size — it pairs with `item_size` to describe the
+*shape* of a fixed read (`item_size * item_count` bytes, capped at 64 KiB), so spelling it `limit`
+would make it look like a truncation knob when it is a required part of the request. The divergence
+in the audit table was a misreading.
+
+Decisions worth keeping:
+
+- **Renaming a parameter is only half the fix; the other half is what the old spelling now does.**
+  `filter` and `instructions` were already handled — `UnknownQueryParamFilter` rejects any
+  undeclared query param — so they self-correct. `parameters[].type` did **not**: it lived inside a
+  JSON body object that nothing validated, so the old spelling read only as
+  "'parameters[0].type_name' is required", saying nothing about the key actually sent. Added
+  `rejectUnknownParameterFields`, mirroring `UnknownQueryParamFilter` for that nested object.
+  A misspelled key now names itself and its intended field.
+- The first attempt at that hint scanned the object for a key that `suggestClosest` maps onto the
+  missing field. It fired on `name` — `suggestClosest` accepts on substring, and `type_name`
+  contains `name` — and pointed the caller at a key that was already correct. Rejecting *unknown*
+  keys is the right shape; suggesting a replacement for a *present* key is not.
+- `get_disassembly`'s `limit` now goes through `requireLimit` like every other list tool, which
+  means `limit=0` is accepted (returns an empty window) where the old `requirePositive` rejected it.
+  Consistency with the neighbours was worth more than the extra rejection.
+- Xref `truncated` is computed *after* the ref-type and address-range filters, so it means
+  "a matching xref was dropped" and never "the page happened to fill exactly". `search_bytes` and
+  `search_instructions` use the looser `hits.size() >= limit`; the precise form costs nothing here.
+- `indirect_calls` is deliberately not subject to `limit` — it is inferred from the full reference
+  set, not paged from it. Said so in its `@Schema`.
+
+On `count`: documented the convention rather than adding a `total`, since a true total means a full
+scan on every call. Every `count` that a `limit` can bound now carries a `@Schema` saying it is the
+size of the returned page, and every `limit` names its own cap (1000 / 500 / 2000 / 5000) so
+`TOOLS.md` carries them — the caps were previously discoverable only by exceeding one.
+
+**Left open, same bug class:** `search_functions`, `search_data_types` and
+`search_defined_strings` truncate silently — they have a `limit` but no `truncated` flag, so a
+result of exactly `limit` items is indistinguishable from a complete one. Worth fixing the same way
+the xref tools just were.
 
 ### 5.2 Naming rules on labels and globals
 
@@ -499,18 +533,28 @@ than obeyed, which is the worst outcome.
 Add distinct `label_name` / `global_name` rule keys so a project can permit plain recovered names
 without dropping to scripts. The prefixes stay mandatory on functions.
 
-### 5.3 Docs
+### 5.3 Docs — **README and caps DONE 2026-08-08**
 
-- `README.md:104-105` — replace the fictional `GET /tools` / `POST /call` table with the real
-  surface (`/health`, `/schema`, `/openapi.json`, `GET|POST /tool/<operationId>`). Working this out
-  from source cost a reported ~15 minutes at session start.
-- Document the per-tool `limit` caps in `TOOLS.md` (1000 on `search_defined_strings` /
-  `search_functions`, 2000 on the byte/instruction/constant searches, 5000 on `list_globals`).
-- Document that `add_script` **snapshots** the file (issue #12), or better: have `run_script` compare
-  mtime/hash against the registered source and re-copy or warn. The current failure mode is a
-  plausible success response running old code.
+- ~~`README.md:104-105` — the fictional `GET /tools` / `POST /call` table~~ — **done.** Replaced
+  with the real surface (`/health`, `/schema`, `/openapi.json`, `GET|POST /tool/<operationId>`),
+  the response envelope, the `error_id`/`log_file` path, and a worked `curl` for each verb. Says
+  outright that there is no dispatcher endpoint, since that is the wrong model the old table taught.
+- ~~Document the per-tool `limit` caps in `TOOLS.md`~~ — **done**, in the `@Parameter` descriptions
+  so the generator picks them up (1000 `search_functions`/`search_defined_strings`, 500
+  `search_data_types`, 2000 the byte/instruction/constant searches and `get_disassembly`, 5000
+  `list_globals` and the xref tools).
+- `add_script` **snapshots** the file — its summary now says so and tells the caller to re-add
+  after every edit. The better fix (issue #12) is still open: have `run_script` compare mtime/hash
+  against the registered source and re-copy or warn, since the current failure mode is a plausible
+  success response running old code.
 - Fix `projects/<project-c>/.claude/skills/ghidra-<project-c>/SKILL.md:31` — 5 positionals, missing the empty
-  vmargs slot.
+  vmargs slot. (Outside this repo.)
+
+One generator change came with this: `scripts/generate_tools_docs.py` rendered a nested request
+object as a bare `object`, so `set_function_prototype`'s `parameters` documented its element keys
+nowhere in `TOOLS.md` — the exact information the `{name, type}` → `{name, type_name}` rename makes
+load-bearing. It now renders `array of object {name, type_name}`. (The MCP bridge was never
+affected; `bridge.py` resolves item `$ref`s and passed the nested shape through all along.)
 
 ### 5.4 Smaller items
 
@@ -541,7 +585,9 @@ Each step is independently shippable.
    than an array parameter on `rename_variable`; see the section for why.
 8. ~~**§4.2** / **§4.3** comment rules~~ — **done**, as one `comments:` section carrying both the
    length caps and the precondition rules.
-9. **§5.1** parameter renames + `TOOLS.md` regeneration; **§5.3** README.
+9. ~~**§5.1** parameter renames + `TOOLS.md` regeneration; **§5.3** README~~ — **done.** The
+   `limit` caps and the `count`-is-a-page-size convention landed with it; `read_data`'s
+   `item_count` was left alone (it is a read shape, not a page size).
 10. **§5.2** `label_name` / `global_name` rule keys.
 11. **§5.4** the remaining small items.
 

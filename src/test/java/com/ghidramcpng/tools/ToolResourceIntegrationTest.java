@@ -813,7 +813,21 @@ class ToolResourceIntegrationTest {
                         "name_or_address", FN_COMPUTE,
                         "return_type", "int",
                         "parameters", parameterArray(json("name", "x")))));
-        assertTrue(missingType.getMessage().contains("parameters[0].type"));
+        assertTrue(missingType.getMessage().contains("parameters[0].type_name"));
+
+        // validation: an unrecognised key names itself and the field it was probably meant to be.
+        // 'type' is this field's former spelling, so it is the miss agents will actually make.
+        IllegalArgumentException oldSpelling = assertThrows(
+                IllegalArgumentException.class,
+                () -> writeTools.setFunctionPrototype(json(
+                        "program", programName,
+                        "name_or_address", FN_COMPUTE,
+                        "return_type", "int",
+                        "parameters", parameterArray(json("name", "x", "type", "int")))));
+        assertTrue(oldSpelling.getMessage().contains("'type'"),
+                "message must name the key that was actually supplied: " + oldSpelling.getMessage());
+        assertTrue(oldSpelling.getMessage().contains("type_name"),
+                "message must point at the valid field: " + oldSpelling.getMessage());
 
         // validation: blank name in parameter
         IllegalArgumentException blankName = assertThrows(
@@ -822,7 +836,7 @@ class ToolResourceIntegrationTest {
                         "program", programName,
                         "name_or_address", FN_COMPUTE,
                         "return_type", "int",
-                        "parameters", parameterArray(json("name", "   ", "type", "int")))));
+                        "parameters", parameterArray(json("name", "   ", "type_name", "int")))));
         assertTrue(blankName.getMessage().contains("parameters[0].name"));
     }
 
@@ -2514,8 +2528,8 @@ class ToolResourceIntegrationTest {
         return array;
     }
 
-    private static JsonObject parameter(String name, String type) {
-        return json("name", name, "type", type);
+    private static JsonObject parameter(String name, String typeName) {
+        return json("name", name, "type_name", typeName);
     }
 
     private static JsonArray parameterArray(JsonObject... params) {
