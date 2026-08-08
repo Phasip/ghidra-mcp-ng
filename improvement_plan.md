@@ -389,7 +389,7 @@ Covered by `tests/test_integration.py::TestBatchedWrites`: batched rename round-
 failure (bad item reported, good item still applied and observable), batched `set_comment`, and both
 rejection paths.
 
-### 4.2 Per-type comment caps in `rules.yaml`
+### 4.2 Per-type comment caps in `rules.yaml` — **DONE 2026-08-08** (with §4.3)
 
 Fits the existing architecture exactly — a `comments:` map alongside `naming:`, reusing
 `RulesEngine`, `NamingRuleViolation` and the 400 path, configurable per project. Note
@@ -408,15 +408,52 @@ comments:
     max_length: 120
 ```
 
-### 4.3 A precondition rule, not a length rule (the sharp one)
+### 4.3 A precondition rule, not a length rule (the sharp one) — **DONE 2026-08-08**
 
 Length caps are gameable — many short plates beat one long one. What actually correlates with the
 failure is *a comment written on a function that is still auto-named*.
 
 Reject a `PLATE` on a function whose name still matches `^(FUN_|SUB_|thunk_FUN_)`, with a message
 naming the exact next call. Optionally extend to locals: reject when more than N variables still
-match `^(local_|uVar|iVar|puVar|param_)\d+`, with a message pointing at `get_function_variables`.
+match the decompiler's default spellings, with a message pointing at `get_function_variables`.
 This encodes the intended ordering directly instead of approximating it by size.
+
+**Both landed as one `comments:` section**, keyed by comment type alongside `naming:`, reusing
+`RulesEngine` / `NamingRuleViolation` / the 400 path exactly as predicted. Keys: `max_length`,
+`require_named_function`, `max_auto_named_variables`, `message`. Every constraint is off unless
+set, so an absent section (or no `--rules`) leaves `set_comment` unconstrained.
+
+Findings worth keeping:
+
+- **The variable rule cannot see what the field reports complain about most.** `uVar7`, `iVar3`,
+  `puVar2` are the *decompiler's* inventions and live only in its view — they never reach the
+  listing, so `Function.getAllVariables()` cannot count them. Reading them means a decompile on
+  every `set_comment` call, which is far too expensive for a guard rail. The rule therefore counts
+  listing variables only (`local_`, `param_`, `unaff_`, `in_`, `extraout_`), which is the bulk of
+  what an unanalysed function carries but *not* all of it. The plan's proposed regex
+  (`^(local_|uVar|iVar|puVar|param_)\d+`) implied otherwise; it would have silently matched nothing
+  for three of its five alternatives.
+- `RulesEngine` stays free of Ghidra types: `set_comment` passes the enclosing function's *name*,
+  and the variable count as an `IntSupplier` so the listing walk never runs for a `max_length`-only
+  rule. Covered by a test that throws from the supplier if it is consulted.
+- Address resolution moved ahead of `runTransaction` in `set_comment` — the rules need the
+  enclosing function, and per coding standard 5 that lookup belongs outside the transaction anyway.
+  A rejected comment is now provably never written (asserted in the test).
+- The auto-name patterns (`FUN_`/`SUB_`/`thunk_FUN_`) are deliberately **not** configurable. They
+  are Ghidra's own conventions, not a project preference, and a knob there is one more thing to get
+  wrong.
+- Comments on data (no enclosing function) are subject to `max_length` alone; clearing a comment is
+  always allowed, since it can only reduce what the rule objects to.
+
+Covered by 11 new `RulesEngineTest` cases (engine mechanics, message content, the laziness
+guarantee) plus 4 in `ToolResourceIntegrationTest` that drive the real `set_comment` against the
+fixture — including one that renames a function to `FUN_<addr>` to recreate the state the rule
+exists to catch, since the fixture is compiled with symbols and has nothing auto-named. The
+variable-count test derives its threshold from the fixture and `assumeTrue`s rather than silently
+passing if the analyzer ever stops recovering auto-named locals.
+
+Note the live pytest server runs without `--rules`, so the Python suite deliberately covers none of
+this; enforcement lives in the two Java suites.
 
 ### 4.4 What not to do
 
@@ -501,11 +538,12 @@ Each step is independently shippable.
 5. ~~**§2.4** eviction on the failure path; then delete `drainLeakedEntries`~~ — **done.**
 6. ~~**§2.6** server-side log file + `error_id`; map 404 to 404~~ — **done.** 405 came with it.
 7. ~~**§4.1** batch `rename_variable`~~ — **done**, but as a widening of `batch_tool_call` rather
-   than an array parameter on `rename_variable`; see the section for why. Next: **§4.2** / **§4.3**
-   comment rules.
-8. **§5.1** parameter renames + `TOOLS.md` regeneration; **§5.3** README.
-9. **§5.2** `label_name` / `global_name` rule keys.
-10. **§5.4** the remaining small items.
+   than an array parameter on `rename_variable`; see the section for why.
+8. ~~**§4.2** / **§4.3** comment rules~~ — **done**, as one `comments:` section carrying both the
+   length caps and the precondition rules.
+9. **§5.1** parameter renames + `TOOLS.md` regeneration; **§5.3** README.
+10. **§5.2** `label_name` / `global_name` rule keys.
+11. **§5.4** the remaining small items.
 
 Per the repo's definition of done, each change needs integration tests covering the happy path *and*
 the error path, `make tools-docs` regenerated, and `gradle buildExtension` run before `pytest` — the
