@@ -246,7 +246,7 @@ This removes the `end(true)` / `start()` hack that every `setLanguage`-style scr
 carry, and which is easy to get wrong in a way that wedges the program. An option on an existing
 tool, per design principle 9.
 
-### 2.6 Log the actual exception server-side
+### 2.6 Log the actual exception server-side — **DONE 2026-08-08**
 
 `ApiExceptionMapper` (`HttpApiServer.java:303`) keeps only `getMessage()`. The project A session could not
 file a proper bug report because the stack trace went only to a pty owned by another process, and
@@ -255,6 +255,29 @@ the reporter (correctly) would not restart shared infrastructure on a guess.
 Log the full stack to a rotating file and return an `error_id` in the JSON envelope so a report can
 quote it. Also: map `WebApplicationException` to its own status so a 404 stops reading as
 `"Internal error"` (issue #10).
+
+Implemented as `mcp/ServerLog.java` (rotating at 4 MB, one previous generation kept) plus a
+three-way split in the mapper: a rejected argument stays a 400 with the message alone; a
+`WebApplicationException` keeps its own status; anything else is logged and the response carries
+`error_id`. Writing is best-effort — if the file cannot be opened the id is still allocated and the
+entry falls back to stderr, so logging can never block a response.
+
+Decisions worth keeping:
+
+- The log is **per project** (`~/.ghidra-mcp-ng/<project>.log`, `--log` to override), not shared.
+  Two servers interleaving into one file makes it useless exactly when two projects are in play.
+- `GET /health` reports the active path as `log_file`. Without that, an `error_id` is only useful to
+  whoever already knows where the server writes — which is the same gap that made the project A trace
+  unreachable in the first place.
+- A 404 on this server means one thing: a tool name that does not exist. It now says so and names
+  the closest real tool, reusing `UnknownQueryParamFilter`'s levenshtein "did you mean" — moved to
+  `ApiSupport` rather than duplicated. The tool-name list comes from `ToolHelpers.listEndpoints`,
+  reflection-derived for the same reason `countEndpoints` is (`countEndpoints` is now its size).
+- 405 falls out of the same change: a GET on a POST-only tool used to read as an internal error.
+
+Covered by `tests/test_integration.py::TestErrorReporting` — 404 with suggestion, 404 on a
+non-tool path, 405, `log_file` in `/health`, and an `error_id` that appears exactly once in the log
+next to the stack trace. All five verified to fail against the previous `HttpApiServer`.
 
 ---
 
@@ -445,7 +468,7 @@ Each step is independently shippable.
 4. ~~**§3.2** save at the end of a successful `withProgramLock`~~ — **done.** Covered by
    `runScript_changesPersistAfterReopen`, verified to fail without the save.
 5. ~~**§2.4** eviction on the failure path; then delete `drainLeakedEntries`~~ — **done.**
-6. **§2.6** server-side log file + `error_id`; map 404 to 404.
+6. ~~**§2.6** server-side log file + `error_id`; map 404 to 404~~ — **done.** 405 came with it.
 7. **§4.1** batch `rename_variable`; then **§4.2** / **§4.3** comment rules.
 8. **§5.1** parameter renames + `TOOLS.md` regeneration; **§5.3** README.
 9. **§5.2** `label_name` / `global_name` rule keys.
