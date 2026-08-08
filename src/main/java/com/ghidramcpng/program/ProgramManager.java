@@ -279,6 +279,11 @@ public class ProgramManager {
      * own transaction commits to the in-memory database but never writes the domain file, so
      * without this a successful script's work — a memory map, a batch of applied types — would
      * survive only until the server stopped.
+     *
+     * <p>On failure the program is {@linkplain #evict evicted}. A script that threw, or that
+     * returned while still holding a transaction, leaves the in-memory database in a state
+     * nothing can reliably repair; discarding it is reliable, and everything the script
+     * completed before that point is already on disk.
      */
     public <T> T withProgramLock(Program program, java.util.concurrent.Callable<T> action)
             throws Exception {
@@ -288,28 +293,38 @@ public class ProgramManager {
                     program.getName() + "' after 300s");
         }
         try {
-            boolean actionSucceeded = false;
             T result;
             try {
                 result = action.call();
-                actionSucceeded = true;
-            } finally {
-                TransactionInfo leftover = program.getCurrentTransactionInfo();
-                if (leftover != null) {
-                    String desc = leftover.getDescription();
-                    drainLeakedEntries(program, "aborting leaked transaction '" + desc + "'");
-                    if (actionSucceeded) {
-                        // Action returned normally but left a transaction open — surface so the
-                        // user knows their script is buggy instead of silently swallowing it.
-                        throw new IllegalStateException(
-                                "Script left Ghidra transaction '" + desc + "' open. It has been " +
-                                "rolled back and any partial changes were discarded. Wrap " +
-                                "startTransaction()/endTransaction() in try/finally so the " +
-                                "transaction always closes, or use GhidraScript built-ins which " +
-                                "manage transactions for you.");
-                    }
-                    // If the action threw, the original exception is propagating — don't shadow it.
-                }
+            } catch (Exception | Error e) {
+                // A script that threw leaves the program in an unknown partial state — possibly
+                // with a transaction it opened still open. Discard the in-memory copy rather than
+                // trying to repair it; the next call reopens from disk, where everything that
+                // completed successfully has already been saved.
+                evict(program, "script failed: " + e);
+                throw e;
+            }
+
+            TransactionInfo leftover = program.getCurrentTransactionInfo();
+            if (leftover != null) {
+                // Returned normally but left a transaction open. Its changes were never committed
+                // and cannot be, so the in-memory program is unusable — discard it, and say so,
+                // rather than silently swallowing a buggy script.
+                //
+                // Name the leaked sub-transactions, not the enclosing one: the enclosing
+                // transaction is the one GhidraScript opens around run() and is named after the
+                // script, whereas each sub-transaction carries the description passed to the
+                // startTransaction() call that actually leaked.
+                List<String> leaked = leftover.getOpenSubTransactions();
+                String open = leaked.isEmpty() ? "'" + leftover.getDescription() + "'" : leaked.toString();
+                evict(program, "script left transaction(s) open: " + open);
+                throw new IllegalStateException(
+                        "Script returned with Ghidra transaction(s) still open: " + open +
+                        ". The program has been closed and will be reloaded from disk on the next " +
+                        "call, discarding this run's uncommitted changes. Wrap " +
+                        "startTransaction()/endTransaction() in try/finally so the transaction " +
+                        "always closes, or use GhidraScript built-ins which manage transactions " +
+                        "for you.");
             }
 
             // Reached only when the action returned normally and left no transaction open.
@@ -330,79 +345,52 @@ public class ProgramManager {
     }
 
     /**
-     * Drain any open sub-transaction entries that a GhidraScript leaked by calling
-     * {@code currentProgram.startTransaction()} without a matching {@code endTransaction()}.
+     * Drop a program from the cache and close it, so the next {@link #getOrOpen} reloads it
+     * from the project database on disk.
      *
-     * <h3>Why this is needed</h3>
-     * <p>GhidraScript wraps {@code run()} in its own transaction (entry #0). Scripts may
-     * legally open additional sub-transaction entries; {@code GhidraScript.end(true)} only
-     * closes entry #0. If the script throws mid-run, those extra entries remain open
-     * ({@code activeEntries > 0}), so Ghidra never sets {@code transaction = null} and the
-     * program is effectively stuck: any subsequent {@code startTransaction()} either fails
-     * or opens a new entry in the dead transaction.
+     * <p>This is the recovery path for a program whose in-memory transaction state is broken —
+     * most often a GhidraScript that opened a transaction with
+     * {@code currentProgram.startTransaction()} and threw before ending it. GhidraScript wraps
+     * {@code run()} in its own transaction and {@code end(true)} closes only that one, so the
+     * leaked entries keep {@code activeEntries > 0}: Ghidra never clears the transaction and
+     * every later {@code startTransaction()} on that program fails. Repairing that state in
+     * place means reconstructing Ghidra's internal transaction IDs and hoping; closing the
+     * program discards it outright and always works.
      *
-     * <h3>The drain algorithm</h3>
-     * <p>Ghidra uses an ID scheme: each entry added to the active
-     * {@code DomainObjectDBTransaction} gets ID {@code baseId + list_index}. We add a
-     * sentinel "drain" entry (getting the next available ID&nbsp;=&nbsp;R), immediately end
-     * it with {@code commit=false} to mark the transaction as ABORTED, then walk backwards
-     * ending the N leaked entries at IDs R&#8209;1, R&#8209;2, …, R&#8209;N. When
-     * {@code activeEntries} reaches zero Ghidra's own code runs the ABORTED cleanup path
-     * (closes the DB transaction, invalidates caches, sets {@code transaction = null}) — no
-     * reflection needed.
+     * <p>Nothing durable is lost. Every write tool saves inside {@link #withTransaction}, and a
+     * successful script saves at the end of {@link #withProgramLock}, so eviction discards only
+     * the uncommitted changes of the run that just failed — exactly the state worth throwing
+     * away. Closing with a transaction still open is safe: Ghidra's close path aborts it and
+     * disposes the buffers.
      *
-     * <h3>Fallback</h3>
-     * <p>If the drain fails (e.g. a previous run already called {@code forceLock} and set
-     * {@code transactionTerminated = true}), we fall back to {@code forceLock} + {@code unlock}.
-     * This leaves {@code transaction} non-null internally, so the NEXT call to this method
-     * (in the pre-action safety-net of the following {@code withProgramLock} invocation) will
-     * encounter that state — at which point {@code getCurrentTransactionInfo()} still returns
-     * non-null and we attempt the drain again (which will fail again via
-     * {@code TerminatedTransactionException}). In this degenerate case the program remains
-     * unusable, which is the correct behaviour: something went badly wrong and the operator
-     * should restart the server to reload the program from disk.
+     * <p>A caller that resolved this {@code Program} before eviction and is still using it will
+     * see "program is closed" errors. That is a recoverable per-call failure — its next
+     * {@code getOrOpen} returns the fresh instance — and it is the price of not leaving a
+     * permanently wedged program cached for the life of the server.
+     *
+     * @param program the program to discard; ignored if it is not currently cached
+     * @param reason  short description of what went wrong, for the server log
      */
-    private static void drainLeakedEntries(Program program, String context) {
-        TransactionInfo info = program.getCurrentTransactionInfo();
-        if (info == null) return;
-
-        List<String> leaked = info.getOpenSubTransactions();
-        int N = leaked.size();
-        if (N == 0) return;
-
-        try {
-            // Add a sentinel entry BEFORE the first endTransaction so we have a known anchor
-            // ID (R). This is safe because transactionTerminated is still false here — forceLock
-            // has not been called yet.
-            int R = program.startTransaction("_ng_tx_drain (" + context + ")");
-            // End the sentinel with commit=false. This marks the transaction as ABORTED at the
-            // domain level. activeEntries drops from N+1 to N; since N > 0 the ABORTED cleanup
-            // path does not fire yet (getStatus() returns NOT_DONE_BUT_ABORTED).
-            program.endTransaction(R, false);
-            // End leaked entries newest-first. Each ID is R-i (i=1..N). When the last one
-            // (activeEntries reaches 0) is ended, getStatus() returns ABORTED and Ghidra's
-            // own cleanup runs: DB transaction closed, caches invalidated, transaction = null.
-            for (int i = 1; i <= N; i++) {
-                try {
-                    program.endTransaction(R - i, false);
-                } catch (Exception ignored) {
-                    // Entry already ended somehow; keep going to drive activeEntries to 0.
-                }
-            }
-        } catch (Exception drainFailed) {
-            // transactionTerminated was already true (forceLock ran previously). Fall back to
-            // forceLock, which at least terminates the DB transaction even if it cannot null
-            // out the internal transaction reference.
-            try {
-                program.forceLock(true,
-                        "ng: drain failed (" + context + "), force-terminating '" +
-                        info.getDescription() + "'");
-                program.unlock();
-            } catch (Exception ignored) {
-                System.err.println("[ghidra-mcp-ng] WARNING: forceLock fallback also failed during " +
-                        context + " — program '" + program.getName() + "' may be unusable: " + ignored);
-            }
+    public void evict(Program program, String reason) {
+        boolean wasCached;
+        synchronized (openPrograms) {
+            // Removing by identity: the cache is keyed on pathname, and the caller has a
+            // Program, not a name. Guarding on the removal also makes eviction idempotent —
+            // releasing a consumer twice throws.
+            wasCached = openPrograms.values().removeIf(p -> p == program);
         }
+        transactionLocks.remove(program);
+        if (!wasCached) return;
+
+        String name = program.getDomainFile().getPathname();
+        try {
+            program.release(consumer);
+        } catch (RuntimeException e) {
+            System.err.println("[ghidra-mcp-ng] WARNING: failed to close evicted program '" +
+                    name + "': " + e);
+        }
+        System.err.println("[ghidra-mcp-ng] Evicted '" + name +
+                "'; it will be reloaded from disk on the next call. Reason: " + reason);
     }
 
     /**
@@ -420,16 +408,28 @@ public class ProgramManager {
                     program.getName() + "' after 300s");
         }
         try {
-            int txId = program.startTransaction(description);
-            boolean success = false;
             try {
-                action.run();
-                success = true;
-            } finally {
-                program.endTransaction(txId, success);
-            }
-            if (success) {
-                program.getDomainFile().save(TaskMonitor.DUMMY);
+                int txId = program.startTransaction(description);
+                boolean success = false;
+                try {
+                    action.run();
+                    success = true;
+                } finally {
+                    program.endTransaction(txId, success);
+                }
+                if (success) {
+                    program.getDomainFile().save(TaskMonitor.DUMMY);
+                }
+            } catch (Exception | Error e) {
+                // A rolled-back write leaves a healthy program, so most failures here are just
+                // reported. But if the program's own transaction state is broken — a terminated
+                // transaction, or one still open after ours was closed — nothing this or any
+                // later call does can succeed against it, so discard it instead of leaving a
+                // dead program cached.
+                if (program.hasTerminatedTransaction() || program.getCurrentTransactionInfo() != null) {
+                    evict(program, "unusable transaction state after '" + description + "': " + e);
+                }
+                throw e;
             }
         } finally {
             lock.unlock();

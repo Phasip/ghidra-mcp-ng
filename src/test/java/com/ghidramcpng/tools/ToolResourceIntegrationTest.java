@@ -51,6 +51,7 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -1652,9 +1653,8 @@ class ToolResourceIntegrationTest {
      *
      * <p>After such a crash, every subsequent MCP call against the same program was
      * failing with "Transaction has not been started" / "No transaction is open". The fix
-     * is in {@code ProgramManager.withProgramLock}: after the action completes (whether
-     * normally or exceptionally) it detects and terminates any leftover transaction before
-     * releasing the lock, so the next caller always starts from a clean state.
+     * is in {@code ProgramManager.withProgramLock}: a failed script evicts the program, so
+     * the next caller reopens it from disk with a clean transaction stack.
      */
     @Test
     void runScript_leakedTransaction_doesNotLockSubsequentCalls() throws Exception {
@@ -1700,6 +1700,103 @@ class ToolResourceIntegrationTest {
                     "new_name", FN_ADD));
         } finally {
             scriptTool.deleteScript(json("filename", added.filename()));
+        }
+    }
+
+    /**
+     * The recovery is eviction, not repair: the failed run's program is closed and the next
+     * call gets a fresh instance reloaded from disk. Work saved before the failure survives,
+     * because every write tool saves inside its own transaction.
+     */
+    @Test
+    void runScript_failure_evictsProgramButKeepsSavedWork() throws Exception {
+        writeTools.renameFunction(json(
+                "program", programName,
+                "name_or_address", FN_MULTIPLY,
+                "new_name", "maybe_saved_before_the_crash"));
+        Program beforeCrash = programManager.getOrOpen(programName);
+
+        String scriptClassName = "EvictOnFailure" + UUID.randomUUID().toString().replace("-", "");
+        Path sourceScript = Files.createTempDirectory("ghidra-mcp-ng-evict")
+                .resolve(scriptClassName + ".java");
+        Files.writeString(sourceScript,
+                "import ghidra.app.script.GhidraScript;\n" +
+                "public class " + scriptClassName + " extends GhidraScript {\n" +
+                "    @Override\n" +
+                "    public void run() throws Exception {\n" +
+                "        currentProgram.startTransaction(\"leaked-tx\");\n" +
+                "        throw new RuntimeException(\"simulated script crash\");\n" +
+                "    }\n" +
+                "}\n",
+                StandardCharsets.UTF_8);
+
+        String filename = scriptTool.addScript(json("file_path", sourceScript.toString())).filename();
+        try {
+            assertThrows(Exception.class, () -> scriptTool.runScript(json(
+                    "program", programName,
+                    "filename", filename)));
+
+            assertTrue(beforeCrash.isClosed(),
+                    "The failed run's program must be closed, not left cached and wedged");
+
+            Program afterCrash = programManager.getOrOpen(programName);
+            assertNotSame(beforeCrash, afterCrash,
+                    "The next call must get a program reloaded from disk");
+            assertFalse(afterCrash.isClosed(), "The reloaded program must be usable");
+            assertTrue(functionNamesFromRefs(
+                            readTools.searchFunctions(programName, "maybe_saved_before_the_crash", 10)
+                                    .functions())
+                            .contains("maybe_saved_before_the_crash"),
+                    "Work saved before the failure must survive eviction");
+        } finally {
+            scriptTool.deleteScript(json("filename", filename));
+        }
+    }
+
+    /**
+     * A script that returns normally while still holding a transaction is a bug the caller
+     * must hear about: those changes can never commit, so the program is discarded and the
+     * error says so rather than reporting a silent success.
+     */
+    @Test
+    void runScript_returnsWithTransactionOpen_reportsItAndEvicts() throws Exception {
+        String scriptClassName = "OpenTxOnReturn" + UUID.randomUUID().toString().replace("-", "");
+        Path sourceScript = Files.createTempDirectory("ghidra-mcp-ng-open-tx")
+                .resolve(scriptClassName + ".java");
+        Files.writeString(sourceScript,
+                "import ghidra.app.script.GhidraScript;\n" +
+                "public class " + scriptClassName + " extends GhidraScript {\n" +
+                "    @Override\n" +
+                "    public void run() throws Exception {\n" +
+                "        currentProgram.startTransaction(\"never-ended\");\n" +
+                "    }\n" +
+                "}\n",
+                StandardCharsets.UTF_8);
+
+        String filename = scriptTool.addScript(json("file_path", sourceScript.toString())).filename();
+        try {
+            Program beforeRun = programManager.getOrOpen(programName);
+
+            IllegalStateException ex = assertThrows(IllegalStateException.class,
+                    () -> scriptTool.runScript(json(
+                            "program", programName,
+                            "filename", filename)));
+            String msg = ex.getMessage();
+            assertTrue(msg.contains("never-ended"),
+                    "Error must name the transaction left open: " + msg);
+            assertTrue(msg.contains("try/finally"),
+                    "Error must say how to fix the script: " + msg);
+
+            assertTrue(beforeRun.isClosed(), "The program must be evicted, not left wedged");
+            assertNotSame(beforeRun, programManager.getOrOpen(programName));
+
+            // And the reopened program is fully usable.
+            assertTrue(writeTools.renameFunction(json(
+                    "program", programName,
+                    "name_or_address", FN_ADD,
+                    "new_name", "maybe_add_after_open_tx")).success());
+        } finally {
+            scriptTool.deleteScript(json("filename", filename));
         }
     }
 
