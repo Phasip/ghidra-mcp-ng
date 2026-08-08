@@ -149,7 +149,25 @@ naming:
     message: "Function names must be valid C identifiers"
 ```
 
-Supported field keys: `function_name`, `variable_name`, `struct_field_name`, `struct_name`.
+Supported field keys, and the tools they gate:
+
+| Key | Applies to |
+|---|---|
+| `function_name` | `rename_function` |
+| `variable_name` | `rename_variable`, `set_parameter_type`, `set_function_prototype` parameters |
+| `struct_name` | `create_struct` |
+| `struct_field_name` | `add_struct_field`, `replace_struct_field` |
+| `label_name` | `create_label` |
+| `global_name` | `rename_global` |
+
+A key with no entry is unconstrained. An **unknown** key is rejected at startup rather than
+ignored — a typo would otherwise leave a rule looking configured while enforcing nothing.
+
+`label_name` and `global_name` are separate from `function_name` on purpose. The
+`maybe_`/`likely_`/`guess_` prefixes mark a name as an *inference*, but data labels and globals are
+often *recovered* — a CMSIS peripheral register, a symbol from a map file. `UART0->CTRL` is a
+datasheet fact and reads better than `likely_UART0->maybe_CTRL_0x18`. The shipped `rules.yaml`
+leaves both unset (unconstrained) and carries commented-out examples for projects that want them.
 
 ### Comment rules
 

@@ -26,6 +26,7 @@ import ghidra.program.model.listing.CodeUnit;
 import ghidra.program.model.listing.CommentType;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.symbol.SourceType;
+import ghidra.program.model.symbol.Symbol;
 import ghidra.util.task.TaskMonitor;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -51,6 +52,7 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
@@ -315,10 +317,10 @@ class ToolResourceIntegrationTest {
     // where the enclosing-function lookup that RulesEngineTest can only stub actually runs.
     // -----------------------------------------------------------------------------------
 
-    /** A WriteTools whose only rules are the supplied comments: section. */
-    private WriteTools writeToolsWithCommentRules(String commentsYaml) throws IOException {
-        Path rulesFile = Files.createTempFile("comment_rules_", ".yaml");
-        Files.writeString(rulesFile, commentsYaml, StandardCharsets.UTF_8);
+    /** A WriteTools whose only rules are the ones in the supplied YAML. */
+    private WriteTools writeToolsWithRules(String rulesYaml) throws IOException {
+        Path rulesFile = Files.createTempFile("rules_", ".yaml");
+        Files.writeString(rulesFile, rulesYaml, StandardCharsets.UTF_8);
         try {
             return new WriteTools(programManager, RulesEngine.load(rulesFile.toFile()));
         } finally {
@@ -328,7 +330,7 @@ class ToolResourceIntegrationTest {
 
     @Test
     void setComment_overConfiguredMaxLength_isRejectedAndNotWritten() throws Exception {
-        WriteTools restricted = writeToolsWithCommentRules(
+        WriteTools restricted = writeToolsWithRules(
                 "comments:\n  PLATE:\n    max_length: 20\n");
         Address addAddress = functionAddress(readTools.searchFunctions(programName, "", 200).functions(), FN_ADD);
 
@@ -355,7 +357,7 @@ class ToolResourceIntegrationTest {
 
     @Test
     void setComment_onAutoNamedFunction_isRejectedUntilItIsRenamed() throws Exception {
-        WriteTools restricted = writeToolsWithCommentRules(
+        WriteTools restricted = writeToolsWithRules(
                 "comments:\n  PLATE:\n    require_named_function: true\n");
         Address addAddress = functionAddress(readTools.searchFunctions(programName, "", 200).functions(), FN_ADD);
         String autoName = "FUN_" + addAddress;
@@ -410,7 +412,7 @@ class ToolResourceIntegrationTest {
         // At its own count the rule passes; one tighter it must fail. Deriving the threshold
         // from the fixture keeps this independent of how many locals the analyzer happens to
         // recover for this build.
-        WriteTools atLimit = writeToolsWithCommentRules(
+        WriteTools atLimit = writeToolsWithRules(
                 "comments:\n  PLATE:\n    max_auto_named_variables: " + autoNamed + "\n");
         assertDoesNotThrow(() -> atLimit.setComment(json(
                 "program", programName,
@@ -422,7 +424,7 @@ class ToolResourceIntegrationTest {
         // case below becomes untestable. Skip loudly rather than passing on the pass case alone.
         org.junit.jupiter.api.Assumptions.assumeTrue(autoNamed > 0,
                 "fixture function '" + FN_COMPUTE + "' has no auto-named listing variables");
-        WriteTools belowLimit = writeToolsWithCommentRules(
+        WriteTools belowLimit = writeToolsWithRules(
                 "comments:\n  PLATE:\n    max_auto_named_variables: " + (autoNamed - 1) + "\n");
         var violation = assertThrows(com.ghidramcpng.rules.NamingRuleViolation.class,
                 () -> belowLimit.setComment(json(
@@ -443,6 +445,83 @@ class ToolResourceIntegrationTest {
                 "address", "0x" + addAddress,
                 "comment", "x".repeat(2000),
                 "type", "PLATE")));
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Label and global naming rules (improvement_plan §5.2) — create_label and rename_global
+    // used to validate against function_name, which forced the maybe_/likely_ prefixes onto
+    // recovered names (a CMSIS register, a map-file symbol) that are facts, not inferences.
+    // -----------------------------------------------------------------------------------
+
+    /** A rules file whose function_name rule would reject anything without a maybe_ prefix. */
+    private static final String STRICT_FUNCTION_NAME_ONLY =
+            "naming:\n  function_name:\n    pattern: \"^maybe_.*$\"\n";
+
+    @Test
+    void createLabel_isNotGovernedByTheFunctionNameRule() throws Exception {
+        WriteTools restricted = writeToolsWithRules(STRICT_FUNCTION_NAME_ONLY);
+        Address target = functionAddress(readTools.searchFunctions(programName, "", 200).functions(), FN_ADD);
+
+        assertDoesNotThrow(() -> restricted.createLabel(json(
+                "program", programName,
+                "address", "0x" + target,
+                "name", "UART0_CTRL")));
+
+        // ...while the function rule it no longer shares is still in force.
+        assertThrows(com.ghidramcpng.rules.NamingRuleViolation.class,
+                () -> restricted.renameFunction(json(
+                        "program", programName, "name_or_address", FN_MULTIPLY, "new_name", "plain_name")));
+    }
+
+    @Test
+    void createLabel_enforcesLabelNameRuleAndWritesNothingWhenRejected() throws Exception {
+        WriteTools restricted = writeToolsWithRules(
+                "naming:\n  label_name:\n    pattern: \"^lbl_.*$\"\n    message: \"labels start with lbl_\"\n");
+        Address target = functionAddress(readTools.searchFunctions(programName, "", 200).functions(), FN_ADD);
+
+        var violation = assertThrows(com.ghidramcpng.rules.NamingRuleViolation.class,
+                () -> restricted.createLabel(json(
+                        "program", programName,
+                        "address", "0x" + target,
+                        "name", "not_prefixed")));
+        assertTrue(violation.getMessage().contains("labels start with lbl_"),
+                "Message must carry the configured text: " + violation.getMessage());
+
+        Program program = programManager.getOrOpen(programName);
+        for (Symbol symbol : program.getSymbolTable().getSymbols(target)) {
+            assertNotEquals("not_prefixed", symbol.getName(), "A rejected label must not be created");
+        }
+
+        assertDoesNotThrow(() -> restricted.createLabel(json(
+                "program", programName,
+                "address", "0x" + target,
+                "name", "lbl_accepted")));
+    }
+
+    @Test
+    void renameGlobal_isGovernedByGlobalNameRuleOnly() throws Exception {
+        Address target = functionAddress(readTools.searchFunctions(programName, "", 200).functions(), FN_COMPUTE);
+        // A label is a renameable global symbol, so it gives rename_global something to act on
+        // without depending on which data symbols the analyzer happened to recover.
+        writeTools.createLabel(json(
+                "program", programName, "address", "0x" + target, "name", "rule_probe_symbol"));
+
+        WriteTools restricted = writeToolsWithRules(
+                STRICT_FUNCTION_NAME_ONLY
+                + "  global_name:\n    pattern: \"^g_.*$\"\n    message: \"globals start with g_\"\n");
+
+        var violation = assertThrows(com.ghidramcpng.rules.NamingRuleViolation.class,
+                () -> restricted.renameGlobal(json(
+                        "program", programName,
+                        "name_or_address", "rule_probe_symbol",
+                        "new_name", "maybe_still_wrong")));
+        assertTrue(violation.getMessage().contains("globals start with g_"),
+                "global_name is the rule that applies, not function_name: " + violation.getMessage());
+
+        assertDoesNotThrow(() -> restricted.renameGlobal(json(
+                "program", programName,
+                "name_or_address", "rule_probe_symbol",
+                "new_name", "g_renamed_probe")));
     }
 
     @Test

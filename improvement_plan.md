@@ -519,19 +519,39 @@ size of the returned page, and every `limit` names its own cap (1000 / 500 / 200
 result of exactly `limit` items is indistinguishable from a complete one. Worth fixing the same way
 the xref tools just were.
 
-### 5.2 Naming rules on labels and globals
+### 5.2 Naming rules on labels and globals — **DONE 2026-08-08**
 
-`rename_global` (`WriteTools.java:152`) and `create_label` (`:183`) both validate against the
-`function_name` rule, so every data label must carry `maybe_`/`likely_`/`guess_`.
+`rename_global` (`WriteTools.java:152`) and `create_label` (`:183`) both validated against the
+`function_name` rule, so every data label had to carry `maybe_`/`likely_`/`guess_`.
 
 That is wrong for **recovered** names. CMSIS peripheral names and their register fields are datasheet
 facts, not inferences — `UART0->CTRL` is strictly more readable than
 `likely_UART0->maybe_CTRL_0x18`. Project A worked around it by applying those from
-GhidraScripts, which bypass the rules engine entirely — i.e. the rule is being routed around rather
+GhidraScripts, which bypass the rules engine entirely — i.e. the rule was being routed around rather
 than obeyed, which is the worst outcome.
 
-Add distinct `label_name` / `global_name` rule keys so a project can permit plain recovered names
-without dropping to scripts. The prefixes stay mandatory on functions.
+Added `label_name` and `global_name`. The prefixes stay mandatory on functions; the shipped
+`rules.yaml` leaves both new keys unset (= unconstrained) with commented-out examples and the
+reasoning inline.
+
+Points worth keeping:
+
+- **The change's own risk is silence.** `validate` passes when no rule is configured, so pointing
+  these two tools at new keys silently drops enforcement for any project whose `rules.yaml` only
+  defines `function_name`. Nothing can infer that project's intent — but the same silence was
+  already a standing trap: `naming:` is a free-form map, so a project that wrote `label_name` before
+  today got no rule and no error. So `RulesEngine.load` now rejects any key outside
+  `KNOWN_NAMING_FIELDS` / `KNOWN_COMMENT_TYPES`, with the usual `suggestClosest` "did you mean".
+  A typo'd rule can no longer look configured while enforcing nothing.
+- **The file is validated; the constructor is not.** `RulesConfig` is a programmatic API that tests
+  legitimately drive with invented field types, and `validate(fieldType, …)` stays generic. Only
+  `load(File)` — human input — is checked. Two existing `RulesEngineTest` cases used `my_field` /
+  `type_a` through the YAML path and now use real keys, which is what they should have exercised.
+- `create_label` and `rename_global` had **no test coverage at all** in either suite before this.
+  They now have three: the function rule provably does not reach a label, each new key is enforced
+  end-to-end, and a rejected label is not written. Plus a `KNOWN_NAMING_FIELDS` guard test — a tool
+  validating a key missing from that list would make the key unconfigurable, since `rules.yaml`
+  would then reject it at startup.
 
 ### 5.3 Docs — **README and caps DONE 2026-08-08**
 
@@ -588,7 +608,8 @@ Each step is independently shippable.
 9. ~~**§5.1** parameter renames + `TOOLS.md` regeneration; **§5.3** README~~ — **done.** The
    `limit` caps and the `count`-is-a-page-size convention landed with it; `read_data`'s
    `item_count` was left alone (it is a read shape, not a page size).
-10. **§5.2** `label_name` / `global_name` rule keys.
+10. ~~**§5.2** `label_name` / `global_name` rule keys~~ — **done.** Unknown `naming:`/`comments:`
+    keys are now rejected at load, which is what makes adding keys safe.
 11. **§5.4** the remaining small items.
 
 Per the repo's definition of done, each change needs integration tests covering the happy path *and*

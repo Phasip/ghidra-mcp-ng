@@ -28,6 +28,19 @@ public class RulesEngine {
 
     private static final int DEFAULT_DECOMPILE_TIMEOUT_SECONDS = 60;
 
+    /**
+     * Every {@code naming:} key a write tool actually asks for. A key outside this set can only
+     * be a typo, and a typo here fails silently — {@link #validate} passes when no rule is
+     * configured — so the rule would appear to be in force while enforcing nothing.
+     */
+    public static final java.util.List<String> KNOWN_NAMING_FIELDS = java.util.List.of(
+            "function_name", "variable_name", "struct_name", "struct_field_name",
+            "label_name", "global_name");
+
+    /** Every comment type {@code set_comment} accepts; the {@code comments:} keys. */
+    public static final java.util.List<String> KNOWN_COMMENT_TYPES = java.util.List.of(
+            "PRE", "POST", "EOL", "PLATE", "REPEATABLE");
+
     private final RulesConfig config;
     private final Map<String, Pattern> patterns = new HashMap<>();
 
@@ -69,6 +82,11 @@ public class RulesEngine {
         try (InputStream in = new FileInputStream(file)) {
             RulesConfig config = yaml.load(in);
             if (config == null) config = new RulesConfig();
+            // Only the file is checked, not the constructor: a rules.yaml is human input where a
+            // typo must be loud, while the RulesConfig constructor is a programmatic API that
+            // tests and callers may legitimately drive with any field type.
+            rejectUnknownKeys(file, "naming", config.getNaming().keySet(), KNOWN_NAMING_FIELDS);
+            rejectUnknownKeys(file, "comments", config.getComments().keySet(), KNOWN_COMMENT_TYPES);
             return new RulesEngine(config);
         } catch (org.yaml.snakeyaml.error.YAMLException e) {
             StringBuilder details = new StringBuilder();
@@ -85,6 +103,24 @@ public class RulesEngine {
         } catch (PatternSyntaxException e) {
             throw new IllegalArgumentException(
                     "Invalid regex in rules file '" + file + "': " + e.getMessage(), e);
+        }
+    }
+
+    private static void rejectUnknownKeys(File file, String section,
+            java.util.Collection<String> provided, java.util.List<String> known) {
+        for (String key : provided) {
+            if (known.contains(key)) {
+                continue;
+            }
+            StringBuilder message = new StringBuilder()
+                    .append("Unknown key '").append(key).append("' under '").append(section)
+                    .append(":' in rules file '").append(file).append("'. ")
+                    .append("Valid keys: ").append(String.join(", ", known)).append(".");
+            String suggestion = com.ghidramcpng.mcp.ApiSupport.suggestClosest(key, known);
+            if (suggestion != null) {
+                message.append(" Did you mean '").append(suggestion).append("'?");
+            }
+            throw new IllegalArgumentException(message.toString());
         }
     }
 

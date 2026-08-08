@@ -150,7 +150,10 @@ public class WriteTools {
         String nameOrAddress = required(request, "name_or_address");
         String newName = requireMaxLength(required(request, "new_name"), "new_name", MAX_NAME_LENGTH);
 
-        rules.validate("function_name", newName);
+        // Its own rule key, not function_name: a global's name is often *recovered* rather than
+        // inferred (a CMSIS peripheral, a symbol from a map file), and a recovered name is a fact,
+        // not a guess. Projects that want the maybe_/likely_ prefixes here can still configure it.
+        rules.validate("global_name", newName);
 
         Program program = openProgram(programName);
         runTransaction(program, "Rename global: " + nameOrAddress + " -> " + newName, () -> {
@@ -181,7 +184,7 @@ public class WriteTools {
         String address = required(request, "address");
         String name = requireMaxLength(required(request, "name"), "name", MAX_NAME_LENGTH);
 
-        rules.validate("function_name", name);
+        rules.validate("label_name", name);
 
         Program program = openProgram(programName);
         runTransaction(program, "Create label: " + name + " @ " + address, () -> {

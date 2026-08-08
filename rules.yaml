@@ -1,9 +1,11 @@
 # ghidra-mcp-ng naming rules configuration
 #
-# Rules are enforced on all write operations that set names (functions, variables,
-# struct fields, struct names). Each rule has:
+# Rules are enforced on all write operations that set names. Each rule has:
 #   pattern:  Java regex that the new name MUST fully match
 #   message:  Error message shown to the agent when the rule is violated
+#
+# A field with no rule is unconstrained. Unknown keys are rejected at startup rather than
+# ignored, so a typo cannot leave a rule silently unenforced.
 #
 # This file implements the naming conventions from REVERSING.md:
 #   guess_<name>      — quick name without investigation
@@ -66,6 +68,27 @@ naming:
       Use maybe_<name> for types inferred from code behaviour,
       likely_<name> when a library header or debug information makes it unambiguous,
       guess_<name> for quick labels without investigation.
+
+  # label_name (create_label) and global_name (rename_global) are deliberately left
+  # unconfigured here, which means unconstrained.
+  #
+  # The maybe_/likely_/guess_ prefixes mark a name as an inference. Data labels and globals
+  # are frequently *recovered* rather than inferred — a CMSIS peripheral register, a symbol
+  # from a map file, a string from the binary itself. Those are datasheet facts, and
+  # UART0->CTRL is strictly more readable than likely_UART0->maybe_CTRL_0x18. Forcing the
+  # prefix here does not make the analysis more honest; it makes projects apply these names
+  # from GhidraScripts instead, which bypasses this file entirely.
+  #
+  # Uncomment either to enforce the prefixes on genuinely inferred labels/globals:
+  #
+  # label_name:
+  #   pattern: "^((maybe_|likely_|guess_)[a-zA-Z0-9_]+|[A-Z][A-Za-z0-9_]*)$"
+  #   message: >
+  #     Label names must start with maybe_, likely_ or guess_ unless the name is recovered
+  #     from a datasheet, header or map file (those may use the upstream spelling).
+  #
+  # global_name:
+  #   pattern: "^((maybe_|likely_|guess_)[a-zA-Z0-9_]+|[A-Z][A-Za-z0-9_]*)$"
 
 # Constraints on set_comment, keyed by comment type (PRE, POST, EOL, PLATE, REPEATABLE).
 #
