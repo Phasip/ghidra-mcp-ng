@@ -19,11 +19,14 @@ import ghidra.app.script.GhidraScriptUtil;
 import ghidra.base.project.GhidraProject;
 import ghidra.framework.Application;
 import ghidra.framework.HeadlessGhidraApplicationConfiguration;
+import ghidra.framework.model.DomainFile;
+import ghidra.framework.model.DomainFolder;
 import generic.jar.ResourceFile;
 import ghidra.program.model.listing.CodeUnit;
 import ghidra.program.model.listing.CommentType;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.symbol.SourceType;
+import ghidra.util.task.TaskMonitor;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -1189,6 +1192,28 @@ class ToolResourceIntegrationTest {
         assertSame(byFilename, programManager.getOrOpen(programName));
         assertEquals(consumersAfterFirstOpen, byFilename.getConsumerList().size(),
                 "Repeated lookups must not accumulate consumer references");
+    }
+
+    /**
+     * A bare filename can occur in more than one folder. Picking one silently would write to
+     * the wrong program, so the ambiguity is reported instead — naming every candidate.
+     */
+    @Test
+    void getOrOpen_ambiguousFilename_rejectedAndPathnameStillResolves() throws Exception {
+        DomainFolder root = ghidraProject.getProject().getProjectData().getRootFolder();
+        DomainFile original = programManager.findDomainFile(root, "/" + programName);
+        assertNotNull(original, "Fixture program must exist at the project root");
+        original.copyTo(root.createFolder("dup"), TaskMonitor.DUMMY);
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> programManager.getOrOpen(programName));
+        String msg = ex.getMessage();
+        assertTrue(msg.contains("Ambiguous"), "Error must say it is ambiguous: " + msg);
+        assertTrue(msg.contains("/" + programName), "Error must list the root candidate: " + msg);
+        assertTrue(msg.contains("/dup/" + programName), "Error must list the dup candidate: " + msg);
+
+        // The unambiguous spelling still works.
+        assertNotNull(programManager.getOrOpen("/" + programName));
     }
 
     @Test

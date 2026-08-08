@@ -11,6 +11,7 @@ import ghidra.util.task.TaskMonitor;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.List;
 import java.util.Map;
@@ -420,18 +421,44 @@ public class ProgramManager {
     /**
      * Find a domain file by name in the folder tree. Matches on exact filename or
      * full pathname (e.g. {@code /folder/mylib.so}). Both comparisons are case-sensitive.
+     *
+     * <p>A pathname is unique within a project, but a bare filename can occur in several
+     * folders. Rather than silently picking one, an ambiguous filename is rejected so the
+     * caller can disambiguate — guessing here would write to the wrong program.
+     *
+     * @return the single matching file, or null if nothing matches
+     * @throws IllegalArgumentException if more than one file matches
      */
     public DomainFile findDomainFile(DomainFolder folder, String name) {
-        for (DomainFile f : folder.getFiles()) {
-            if (f.getName().equals(name) || f.getPathname().equals(name)) {
-                return f;
+        List<DomainFile> matches = new ArrayList<>();
+        // Iterative to prevent StackOverflowError on deeply nested project structures.
+        Deque<DomainFolder> stack = new ArrayDeque<>();
+        stack.push(folder);
+        while (!stack.isEmpty()) {
+            DomainFolder current = stack.pop();
+            for (DomainFile f : current.getFiles()) {
+                // A Ghidra file name cannot contain '/', so a query is either a pathname
+                // or a filename — never both, and the two cases cannot collide.
+                if (f.getName().equals(name) || f.getPathname().equals(name)) {
+                    matches.add(f);
+                }
+            }
+            for (DomainFolder sub : current.getFolders()) {
+                stack.push(sub);
             }
         }
-        for (DomainFolder sub : folder.getFolders()) {
-            DomainFile found = findDomainFile(sub, name);
-            if (found != null) return found;
+
+        if (matches.isEmpty()) return null;
+        if (matches.size() == 1) return matches.get(0);
+
+        List<String> pathnames = new ArrayList<>();
+        for (DomainFile f : matches) {
+            pathnames.add(f.getPathname());
         }
-        return null;
+        pathnames.sort(Comparator.naturalOrder());
+        throw new IllegalArgumentException(
+                "Ambiguous program '" + name + "' — " + matches.size() + " files share that name: " +
+                pathnames + ". Pass the full pathname as returned by list_project_files.");
     }
 
     // -----------------------------------------------------------------------------------
