@@ -41,14 +41,25 @@ public final class ToolHelpers {
      * Used to derive {@code TOOL_COUNT} dynamically so it stays in sync when endpoints are added.
      */
     public static int countEndpoints(Class<?> toolClass) {
-        int count = 0;
+        return listEndpoints(toolClass).size();
+    }
+
+    /**
+     * Names the tools a class declares, taken from each endpoint's {@code @Path} segment —
+     * which is the operationId, and therefore the MCP tool name. Derived by reflection for the
+     * same reason as {@link #countEndpoints}: it cannot drift as endpoints are added.
+     */
+    public static List<String> listEndpoints(Class<?> toolClass) {
+        List<String> names = new ArrayList<>();
         for (Method m : toolClass.getDeclaredMethods()) {
-            if (Modifier.isPublic(m.getModifiers())
-                    && (m.isAnnotationPresent(GET.class) || m.isAnnotationPresent(POST.class))) {
-                count++;
+            if (!Modifier.isPublic(m.getModifiers())
+                    || !(m.isAnnotationPresent(GET.class) || m.isAnnotationPresent(POST.class))) {
+                continue;
             }
+            jakarta.ws.rs.Path path = m.getAnnotation(jakarta.ws.rs.Path.class);
+            names.add(path != null ? path.value().replaceAll("^/+", "") : m.getName());
         }
-        return count;
+        return names;
     }
 
     // Parameter extraction from JSON arguments

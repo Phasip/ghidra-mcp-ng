@@ -1006,3 +1006,78 @@ class TestScript:
         assert payload.get("program") == prog
         assert "pointer_size" in payload
         assert "vtables" in payload
+
+
+# ---------------------------------------------------------------------------
+# 15. Error reporting
+# ---------------------------------------------------------------------------
+
+class TestErrorReporting:
+    """
+    Failures must arrive as the failure they are. A tool name that does not exist used to
+    come back as a 500 reading "Internal error: HTTP 404 Not Found", and a genuine server
+    bug came back with only getMessage() — the stack trace went to a terminal the caller
+    could not read, so it could not be reported.
+    """
+
+    def test_unknown_tool_is_404_and_suggests_the_real_name(self, ghidra_server: GhidraClient):
+        status, body = ghidra_server.raw("/tool/get_function_infoo")
+        assert status == 404
+        assert body["ok"] is False
+        assert "get_function_infoo" in body["error"]
+        assert "get_function_info'" in body["error"], "must suggest the closest real tool"
+        assert "Internal error" not in body["error"]
+
+    def test_unknown_path_names_the_real_surface(self, ghidra_server: GhidraClient):
+        # The README used to document GET /tools; it has never existed.
+        status, body = ghidra_server.raw("/tools")
+        assert status == 404
+        assert body["ok"] is False
+        assert "/schema" in body["error"]
+        assert "/tool/" in body["error"]
+
+    def test_wrong_method_keeps_its_own_status(self, ghidra_server: GhidraClient):
+        # rename_function is POST-only; a GET is a 405, not an internal error.
+        status, body = ghidra_server.raw("/tool/rename_function", method="GET")
+        assert status == 405
+        assert body["ok"] is False
+        assert "Internal error" not in body["error"]
+
+    def test_health_reports_the_log_file(self, ghidra_server: GhidraClient):
+        log_file = ghidra_server.health().get("log_file")
+        assert log_file, "health must report where stack traces are written"
+        assert Path(log_file).exists()
+
+    def test_server_error_returns_an_error_id_recorded_in_the_log(
+            self, ghidra_server: GhidraClient, prog: str, tmp_path: Path):
+        script_name = f"ErrorIdProbe{uuid4().hex}"
+        marker = "mcp-error-id-probe"
+        source = tmp_path / f"{script_name}.java"
+        source.write_text(
+            "import ghidra.app.script.GhidraScript;\n"
+            f"public class {script_name} extends GhidraScript {{\n"
+            "    @Override\n"
+            "    public void run() throws Exception {\n"
+            f'        throw new RuntimeException("{marker}");\n'
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        filename = ghidra_server.ok("add_script", {"file_path": str(source)})["filename"]
+        try:
+            resp = ghidra_server.call("run_script", {"program": prog, "filename": filename})
+            assert resp["ok"] is False
+            assert marker in resp["error"]
+            error_id = resp.get("error_id")
+            assert error_id, f"an unexpected failure must carry an error_id: {resp}"
+
+            log = Path(ghidra_server.health()["log_file"]).read_text(errors="replace")
+            entry = log.split(f"[{error_id}]")
+            assert len(entry) == 2, f"error_id {error_id} must appear exactly once in the log"
+            assert marker in entry[1]
+            assert "\tat " in entry[1], "the log entry must carry the full stack trace"
+
+            # The program is still usable afterwards — the failed script's copy was evicted.
+            assert ghidra_server.ok("get_program_info", {"program": prog})["program"] == prog
+        finally:
+            ghidra_server.call("delete_script", {"filename": filename})

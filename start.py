@@ -18,7 +18,9 @@ Examples:
                --port 9000 \\
                --install-ext ~/extensions/MyExtension.zip
 
-The server logs to stderr. Send SIGINT/SIGTERM to shut down cleanly.
+Progress goes to stderr; the full stack trace behind any error_id the API returns is
+written to ~/.ghidra-mcp-ng/<project>.log (override with --log). Send SIGINT/SIGTERM
+to shut down cleanly.
 """
 
 from __future__ import annotations
@@ -159,6 +161,10 @@ def main() -> None:
                              "Omit to disable all naming rules and use built-in defaults.")
     parser.add_argument("--port", type=int, default=8192, metavar="PORT",
                         help="HTTP API port (default: 8192).")
+    parser.add_argument("--log", type=Path, metavar="FILE", default=None,
+                        help="Error log holding the full stack trace behind every error_id "
+                             "returned by the API (default: ~/.ghidra-mcp-ng/<project>.log). "
+                             "GET /health reports the active path as 'log_file'.")
     parser.add_argument("--install-ext", action="append", default=[], type=Path,
                         metavar="ZIP_OR_DIR",
                         help="Install a Ghidra extension ZIP or directory into the user "
@@ -188,6 +194,8 @@ def main() -> None:
     if args.rules is not None:
         rules_path = args.rules.expanduser().resolve()
         cmd[-2:-2] = ["--rules", str(rules_path)]
+    if args.log is not None:
+        cmd[-2:-2] = ["--log", str(args.log.expanduser().resolve())]
 
     # Replace ourselves with the launcher so signals (Ctrl-C, SIGTERM) reach Ghidra
     # directly and the exit code is propagated.

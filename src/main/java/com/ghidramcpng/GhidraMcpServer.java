@@ -14,6 +14,7 @@ import ghidra.framework.Application;
 import ghidra.framework.HeadlessGhidraApplicationConfiguration;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.concurrent.CountDownLatch;
@@ -40,6 +41,10 @@ import java.util.concurrent.CountDownLatch;
  *       default timeout settings are used. The file must exist — a missing path is an error.</dd>
  *   <dt>{@code --port <n>}</dt>
  *   <dd>Optional. HTTP port (default 8192). Binds to 127.0.0.1 only.</dd>
+ *   <dt>{@code --log <path>}</dt>
+ *   <dd>Optional. Error log holding the full stack trace behind every {@code error_id}
+ *       returned by the API. Defaults to {@code ~/.ghidra-mcp-ng/<project>.log}.
+ *       Reported by {@code GET /health} as {@code log_file}.</dd>
  * </dl>
  */
 public class GhidraMcpServer implements GhidraLaunchable {
@@ -51,6 +56,7 @@ public class GhidraMcpServer implements GhidraLaunchable {
 
         String projectPath = null;
         String rulesPath = null;
+        String logPath = null;
         int port = 8192;
 
         Iterator<String> it = Arrays.asList(args).iterator();
@@ -64,6 +70,10 @@ public class GhidraMcpServer implements GhidraLaunchable {
                 case "--rules":
                     if (!it.hasNext()) die("--rules requires a path argument");
                     rulesPath = it.next();
+                    break;
+                case "--log":
+                    if (!it.hasNext()) die("--log requires a path argument");
+                    logPath = it.next();
                     break;
                 case "--port":
                     if (!it.hasNext()) die("--port requires a number argument");
@@ -91,6 +101,22 @@ public class GhidraMcpServer implements GhidraLaunchable {
 
         if (projectParent == null) {
             die("Cannot determine parent directory of project path: " + projectPath);
+        }
+
+        // Open the error log before anything else can fail, so startup failures land in it too.
+        // Per project rather than shared: two servers writing one file makes the log useless
+        // exactly when two projects are in play.
+        File logFile = logPath != null
+                ? new File(logPath)
+                : new File(new File(System.getProperty("user.home"), ".ghidra-mcp-ng"),
+                        projectName + ".log");
+        try {
+            com.ghidramcpng.mcp.ServerLog.init(logFile.toPath());
+            System.err.println("[ghidra-mcp-ng] Error log: " + com.ghidramcpng.mcp.ServerLog.getFile());
+        } catch (IOException e) {
+            // Not fatal — stack traces fall back to stderr, which is where they went before.
+            System.err.println("[ghidra-mcp-ng] WARNING: cannot write error log to " + logFile +
+                    " (" + e + "); stack traces will go to stderr only");
         }
 
         // Initialise Ghidra

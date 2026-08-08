@@ -186,6 +186,20 @@ class GhidraClient:
         """Return True if the tool call returned ok=False."""
         return not self.call(tool, arguments).get("ok", True)
 
+    def raw(self, path: str, method: str = "GET") -> tuple[int, dict]:
+        """
+        Request an arbitrary path, returning (http_status, parsed_body).
+
+        Bypasses the schema lookup in call(), so it can exercise routes that do not exist —
+        which is the point: an unknown tool name must come back as a 404, not a 500.
+        """
+        req = urllib.request.Request(f"{self.base_url}{path}", method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
 
 # ---------------------------------------------------------------------------
 # Session fixtures
@@ -245,7 +259,9 @@ def ghidra_server() -> Generator[GhidraClient, None, None]:
             [launch, "fg", "jdk", "GhidraMcpNg", "2G", "",
              "com.ghidramcpng.GhidraMcpServer",
              "--project", project_path,
-             "--port",    str(TEST_PORT)],
+             "--port",    str(TEST_PORT),
+             # Keep the error log inside the temp dir so a test run leaves nothing in $HOME.
+             "--log",     str(tmpdir / "server.log")],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,

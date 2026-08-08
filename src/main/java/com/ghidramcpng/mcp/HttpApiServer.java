@@ -4,6 +4,7 @@ import ghidra.program.model.address.Address;
 import com.ghidramcpng.rules.NamingRuleViolation;
 import com.ghidramcpng.tools.ReadTools;
 import com.ghidramcpng.tools.ScriptTool;
+import com.ghidramcpng.tools.ToolHelpers;
 import com.ghidramcpng.tools.WriteTools;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -17,9 +18,11 @@ import io.swagger.v3.oas.integration.api.OpenApiContext;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Info;
 import jakarta.ws.rs.GET;
+import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
+import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.container.ContainerRequestFilter;
 import jakarta.ws.rs.container.ResourceInfo;
@@ -27,6 +30,7 @@ import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.UriBuilder;
+import jakarta.ws.rs.core.UriInfo;
 import jakarta.ws.rs.ext.ContextResolver;
 import jakarta.ws.rs.ext.ExceptionMapper;
 import jakarta.ws.rs.ext.Provider;
@@ -141,6 +145,10 @@ public class HttpApiServer {
             body.addProperty("status", "ok");
             body.addProperty("version", VERSION);
             body.addProperty("tools", ReadTools.TOOL_COUNT + WriteTools.TOOL_COUNT + ScriptTool.TOOL_COUNT);
+            // So whoever holds an error_id can find the stack trace it refers to without
+            // having to ask the operator where the server writes.
+            body.addProperty("log_file",
+                    ServerLog.getFile() != null ? ServerLog.getFile().toString() : null);
             return Response.ok(ApiSupport.GSON.toJson(body), MediaType.APPLICATION_JSON).build();
         }
 
@@ -239,7 +247,7 @@ public class HttpApiServer {
                 message.append("This endpoint takes no query parameters.");
             } else {
                 message.append("Valid parameters: ").append(String.join(", ", allowed)).append(".");
-                String suggestion = suggestClosest(unknown.get(0), allowed);
+                String suggestion = ApiSupport.suggestClosest(unknown.get(0), allowed);
                 if (suggestion != null) {
                     message.append(" Did you mean '").append(suggestion)
                             .append("' (for '").append(unknown.get(0)).append("')?");
@@ -256,56 +264,86 @@ public class HttpApiServer {
             return String.join(", ", quoted);
         }
 
-        /** Returns the allowed parameter closest to {@code provided}, or null if none is close. */
-        private static String suggestClosest(String provided, Set<String> allowed) {
-            String best = null;
-            int bestDistance = Integer.MAX_VALUE;
-            for (String candidate : allowed) {
-                int distance = levenshtein(provided.toLowerCase(), candidate.toLowerCase());
-                if (distance < bestDistance) {
-                    bestDistance = distance;
-                    best = candidate;
-                }
-            }
-            // Only suggest when the names are genuinely similar (or one contains the other),
-            // so we don't emit a misleading hint for a wholly unrelated parameter.
-            int threshold = Math.max(2, provided.length() / 2);
-            boolean substring = best != null
-                    && (best.toLowerCase().contains(provided.toLowerCase())
-                        || provided.toLowerCase().contains(best.toLowerCase()));
-            return (best != null && (bestDistance <= threshold || substring)) ? best : null;
-        }
-
-        private static int levenshtein(String a, String b) {
-            int[] prev = new int[b.length() + 1];
-            int[] curr = new int[b.length() + 1];
-            for (int j = 0; j <= b.length(); j++) {
-                prev[j] = j;
-            }
-            for (int i = 1; i <= a.length(); i++) {
-                curr[0] = i;
-                for (int j = 1; j <= b.length(); j++) {
-                    int cost = a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1;
-                    curr[j] = Math.min(Math.min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
-                }
-                int[] tmp = prev;
-                prev = curr;
-                curr = tmp;
-            }
-            return prev[b.length()];
-        }
     }
 
+    /**
+     * Turns every escaping exception into the standard {@code {"ok":false,"error":...}} envelope.
+     *
+     * <p>Three kinds, three treatments. A rejected argument is the caller's to fix, so it becomes
+     * a 400 carrying only the message. A JAX-RS routing failure keeps its own status — a call to a
+     * tool that does not exist must read as 404, not as an internal error. Anything else is a
+     * server bug: the full stack goes to {@link ServerLog} and the response quotes the resulting
+     * {@code error_id} so a report can name the exact entry.
+     */
     @Provider
     public static class ApiExceptionMapper implements ExceptionMapper<Throwable> {
+
+        @Context
+        private UriInfo uriInfo;
+
+        @Context
+        private jakarta.ws.rs.core.Request request;
 
         @Override
         public Response toResponse(Throwable exception) {
             if (exception instanceof NamingRuleViolation || exception instanceof IllegalArgumentException) {
                 return ApiSupport.error(Response.Status.BAD_REQUEST, exception.getMessage());
             }
-            return ApiSupport.error(Response.Status.INTERNAL_SERVER_ERROR,
-                    "Internal error: " + exception.getMessage());
+            if (exception instanceof NotFoundException) {
+                return ApiSupport.error(Response.Status.NOT_FOUND.getStatusCode(), unknownEndpointMessage(), null);
+            }
+            if (exception instanceof WebApplicationException webApp) {
+                // Routing and protocol failures (405, 415, …) already carry the right status and
+                // a message that says what is wrong with the request itself.
+                return ApiSupport.error(webApp.getResponse().getStatus(), webApp.getMessage(), null);
+            }
+
+            String errorId = ServerLog.record(describeRequest(), exception);
+            return ApiSupport.error(Response.Status.INTERNAL_SERVER_ERROR.getStatusCode(),
+                    "Internal error: " + exception.getMessage() +
+                    " (error_id " + errorId + " — the full stack trace is in the server log; " +
+                    "GET /health reports its path)",
+                    errorId);
+        }
+
+        /** e.g. {@code "POST /tool/run_script"}; falls back gracefully outside a request. */
+        private String describeRequest() {
+            String method = request != null ? request.getMethod() : "?";
+            String path = uriInfo != null ? "/" + uriInfo.getPath() : "?";
+            return method + " " + path;
+        }
+
+        /**
+         * A 404 on this server almost always means one thing: a tool name that does not exist.
+         * Say that, and name the closest real tool, rather than echoing "HTTP 404 Not Found".
+         */
+        private String unknownEndpointMessage() {
+            String path = uriInfo != null ? uriInfo.getPath() : "";
+            String requested = path.startsWith("tool/") ? path.substring("tool/".length()) : null;
+
+            StringBuilder message = new StringBuilder("Unknown endpoint '" + describeRequest() + "'. ");
+            if (requested == null) {
+                message.append("This server exposes /health, /schema, /openapi.json and ")
+                        .append("GET|POST /tool/<tool_name>.");
+                return message.toString();
+            }
+
+            message.append("There is no tool named '").append(requested).append("'.");
+            String suggestion = ApiSupport.suggestClosest(requested, toolNames());
+            if (suggestion != null) {
+                message.append(" Did you mean '").append(suggestion).append("'?");
+            } else {
+                message.append(" Call GET /schema for the full tool list.");
+            }
+            return message.toString();
+        }
+
+        private static Set<String> toolNames() {
+            Set<String> names = new TreeSet<>();
+            names.addAll(ToolHelpers.listEndpoints(ReadTools.class));
+            names.addAll(ToolHelpers.listEndpoints(WriteTools.class));
+            names.addAll(ToolHelpers.listEndpoints(ScriptTool.class));
+            return names;
         }
     }
 }
