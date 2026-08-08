@@ -135,7 +135,24 @@ never fires for it.
 
 Ordered by leverage. (1) alone removes the entire reported failure class.
 
-### 2.1 Stop analysing from a read path — **do this first**
+### 2.1 Stop analysing from a read path — **DONE 2026-08-08**
+
+Implemented as a rejection, not a transacted auto-analysis. Note §2.3 had to land first: with
+`analyze_program` still broken, rejecting unanalyzed programs would have pointed callers at a tool
+that could not work. Program opening is now split — `getOrOpen` requires an analyzed program,
+`getOrOpenForAnalysis` is used only by `analyze_program`.
+
+Two findings from implementing it, both worth keeping:
+
+- `GhidraProject.analyze()` does **not** mark the program analyzed. Only
+  `GhidraProgramUtilities.markProgramAnalyzed` does, and nothing in the analysis path calls it.
+  This confirms the project B log's "both halves are required" from first-hand source reading
+  (`Base-src.zip`, `GhidraProject.java:534`, `GhidraProgramUtilities.java:85`).
+- The missing transaction breaks **x86 too**, not only ARM. Reverting the fix, the test fails with
+  `db.NoTransactionException` from the *GCC Exception Handlers* analyzer on the plain x86 fixture.
+  The field reports pinned it on ARM's TMode-writing `FunctionStartAnalyzer`, which made it look
+  more architecture-specific than it is.
+
 
 `getOrOpen` is a read that performs a hidden, unrecoverable write. Per design principle 3 (never
 silently accept or fix — reject with a specific, actionable error), the correct behaviour is not to
@@ -180,7 +197,7 @@ Known limitation left alone deliberately: `findDomainFile` resolves an ambiguous
 whichever comes first in tree order. Rejecting that with an "ambiguous, use the full path" error
 would fit design principle 3 and is worth doing, but it is a separate behaviour change.
 
-### 2.3 Make `analyze_program` work
+### 2.3 Make `analyze_program` work — **DONE 2026-08-08**
 
 `analyzeProgram()` (`:174`) takes the per-program lock but deliberately opens no transaction, on a
 stated assumption that auto-analysis manages its own. That assumption is wrong for the first call in
@@ -403,10 +420,10 @@ without dropping to scripts. The prefixes stay mandatory on functions.
 
 Each step is independently shippable.
 
-1. ~~**§2.2** cache key~~ — **done 2026-08-08.** Java suite + 105 Python tests green.
-2. **§2.1** remove auto-analysis from `getOrOpen` (or transact it + set the flag in a finally) —
-   this alone removes the reported blocker.
-3. **§2.3** transact `analyze_program`.
+1. ~~**§2.2** cache key~~ — **done**, plus `findDomainFile` now rejects an ambiguous filename.
+2. ~~**§2.3** transact `analyze_program`~~ — **done.** Swapped ahead of §2.1: rejecting unanalyzed
+   programs while `analyze_program` was still broken would have left no way out.
+3. ~~**§2.1** remove auto-analysis from `getOrOpen`~~ — **done.**
 4. **§3.2** save at the end of a successful `withProgramLock` — a latent data-loss bug in its own
    right, and the precondition for step 5.
 5. **§2.4** eviction on the failure path; then delete `drainLeakedEntries`.
