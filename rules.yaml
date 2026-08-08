@@ -66,3 +66,41 @@ naming:
       Use maybe_<name> for types inferred from code behaviour,
       likely_<name> when a library header or debug information makes it unambiguous,
       guess_<name> for quick labels without investigation.
+
+# Constraints on set_comment, keyed by comment type (PRE, POST, EOL, PLATE, REPEATABLE).
+#
+# Why this exists: a comment is one call that accepts arbitrary prose and never fails, while
+# naming is N calls that are each validated and can fail. Left alone, that gradient produces
+# a beautifully documented function full of local_2c and uVar7 — and nothing propagates,
+# because the next session's tools read names and types, not prose.
+#
+# Every constraint is off unless set, and the whole section is optional. Available keys:
+#   max_length:               maximum characters (tightens the global 4096 cap)
+#   require_named_function:   reject a comment inside a still-FUN_/SUB_-named function
+#   max_auto_named_variables: reject when the function still has more than N auto-named
+#                             variables. Counts listing variables only (local_, param_,
+#                             unaff_, in_, extraout_) — the decompiler's own uVar7/iVar3
+#                             never reach the listing and are not counted.
+#   message:                  appended to the specific diagnostic
+#
+# Do not ban PLATE outright. A plate is the right home for a role summary, a caveat the names
+# cannot carry, or a pin/bit map with no natural home in a type. The goal is to stop it
+# substituting for naming, not to remove it.
+
+comments:
+
+  PLATE:
+    max_length: 300
+    require_named_function: true
+    message: >
+      A plate comment is a 1-2 line pointer, not the analysis itself. Record what you found
+      by renaming: rename_function, rename_variable, set_function_prototype, create_struct.
+      If it does not fit in 300 characters it belongs in names and types, not in prose.
+
+  PRE:
+    max_length: 500
+    message: >
+      Keep PRE comments to the reason for the code below, not a restatement of it.
+
+  EOL:
+    max_length: 120

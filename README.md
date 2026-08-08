@@ -130,6 +130,29 @@ naming:
 
 Supported field keys: `function_name`, `variable_name`, `struct_field_name`, `struct_name`.
 
+### Comment rules
+
+An optional `comments:` section constrains `set_comment`, keyed by comment type (`PRE`, `POST`,
+`EOL`, `PLATE`, `REPEATABLE`). It exists because a comment is one call that accepts arbitrary prose
+and never fails, while naming is N calls that are each validated — left alone, an agent follows that
+gradient and produces a well-documented function still full of `local_2c`. Nothing propagates,
+because the next session's tools read names and types, not prose.
+
+```yaml
+comments:
+  PLATE:
+    max_length: 300              # tightens the global 4096-char cap
+    require_named_function: true # reject inside a still-FUN_/SUB_-named function
+    max_auto_named_variables: 4  # reject while the function has more than N auto-named vars
+    message: "Record findings by renaming, not by describing."
+```
+
+Every key is optional and every constraint is off unless set, so omitting the section — or
+`--rules` entirely — leaves `set_comment` unconstrained. `max_auto_named_variables` counts listing
+variables only (`local_`, `param_`, `unaff_`, `in_`, `extraout_`); the decompiler's own `uVar7`/
+`iVar3` never reach the listing and are not counted. Comments on data (no enclosing function) are
+subject to `max_length` alone. Clearing a comment is always allowed.
+
 Struct workflow notes:
 
 - `create_struct` accepts `override=true` to clear and resize an existing struct in place without replacing the underlying data type object.

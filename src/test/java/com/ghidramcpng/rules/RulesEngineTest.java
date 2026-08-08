@@ -321,6 +321,130 @@ class RulesEngineTest {
             Files.deleteIfExists(tmp);
         }
     }
+
+    // -----------------------------------------------------------------------------------
+    // Comment rules
+    // -----------------------------------------------------------------------------------
+
+    private static final java.util.function.IntSupplier NO_AUTO_NAMED = () -> 0;
+
+    private static final String COMMENT_YAML =
+            "comments:\n" +
+            "  PLATE:\n" +
+            "    max_length: 30\n" +
+            "    require_named_function: true\n" +
+            "    max_auto_named_variables: 2\n" +
+            "    message: \"Rename it, do not describe it.\"\n";
+
+    @Test
+    @DisplayName("No comments section configured lets every comment through")
+    void noCommentRules_permitsAnything() {
+        var eng = new RulesEngine(new RulesConfig());
+        assertFalse(eng.hasCommentRules());
+        assertDoesNotThrow(() -> eng.validateComment(
+                "PLATE", "x".repeat(4000), "FUN_00401000", () -> 99));
+    }
+
+    @Test
+    @DisplayName("A comment type with no rule is unaffected by another type's rule")
+    void unconfiguredCommentType_passes() throws IOException {
+        var eng = fromYaml(COMMENT_YAML);
+        assertDoesNotThrow(() -> eng.validateComment(
+                "EOL", "x".repeat(500), "FUN_00401000", () -> 99));
+    }
+
+    @Test
+    @DisplayName("Comment over max_length is rejected, naming both lengths")
+    void commentTooLong_rejected() throws IOException {
+        var eng = fromYaml(COMMENT_YAML);
+        var ex = assertThrows(NamingRuleViolation.class, () -> eng.validateComment(
+                "PLATE", "x".repeat(31), "maybe_init", NO_AUTO_NAMED));
+        assertTrue(ex.getMessage().contains("31"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("30"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("Rename it, do not describe it."),
+                "Configured message must be appended. Got: " + ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("Comment at exactly max_length passes")
+    void commentAtLimit_passes() throws IOException {
+        var eng = fromYaml(COMMENT_YAML);
+        assertDoesNotThrow(() -> eng.validateComment(
+                "PLATE", "x".repeat(30), "maybe_init", NO_AUTO_NAMED));
+    }
+
+    @Test
+    @DisplayName("require_named_function rejects a comment inside a FUN_-named function")
+    void autoNamedFunction_rejected() throws IOException {
+        var eng = fromYaml(COMMENT_YAML);
+        var ex = assertThrows(NamingRuleViolation.class, () -> eng.validateComment(
+                "PLATE", "short", "FUN_00401000", NO_AUTO_NAMED));
+        assertTrue(ex.getMessage().contains("FUN_00401000"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("rename_function"),
+                "Message must name the exact next call. Got: " + ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("require_named_function accepts a function a person has named")
+    void namedFunction_passes() throws IOException {
+        var eng = fromYaml(COMMENT_YAML);
+        assertDoesNotThrow(() -> eng.validateComment(
+                "PLATE", "short", "maybe_board_init", NO_AUTO_NAMED));
+    }
+
+    @Test
+    @DisplayName("Comment on data (no enclosing function) skips the function-state rules")
+    void noEnclosingFunction_skipsFunctionRules() throws IOException {
+        var eng = fromYaml(COMMENT_YAML);
+        assertDoesNotThrow(() -> eng.validateComment("PLATE", "short", null, () -> 99));
+    }
+
+    @Test
+    @DisplayName("max_auto_named_variables rejects over the limit and points at the fix")
+    void tooManyAutoNamedVariables_rejected() throws IOException {
+        var eng = fromYaml(COMMENT_YAML);
+        var ex = assertThrows(NamingRuleViolation.class, () -> eng.validateComment(
+                "PLATE", "short", "maybe_init", () -> 3));
+        assertTrue(ex.getMessage().contains("3"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("get_function_variables"), ex.getMessage());
+        assertDoesNotThrow(() -> eng.validateComment(
+                "PLATE", "short", "maybe_init", () -> 2));
+    }
+
+    @Test
+    @DisplayName("The variable count is not computed unless a rule needs it")
+    void variableCount_notComputedWhenUnused() throws IOException {
+        var eng = fromYaml(
+                "comments:\n" +
+                "  PLATE:\n" +
+                "    max_length: 30\n");
+        assertDoesNotThrow(() -> eng.validateComment("PLATE", "short", "FUN_00401000",
+                () -> { throw new AssertionError("counted variables for a max_length-only rule"); }));
+    }
+
+    @Test
+    @DisplayName("Clearing a comment is always allowed")
+    void blankComment_alwaysPasses() throws IOException {
+        var eng = fromYaml(COMMENT_YAML);
+        assertDoesNotThrow(() -> eng.validateComment("PLATE", "", "FUN_00401000", () -> 99));
+        assertDoesNotThrow(() -> eng.validateComment("PLATE", null, "FUN_00401000", () -> 99));
+    }
+
+    @Test
+    @DisplayName("Auto-generated name detection covers Ghidra's own spellings only")
+    void autoGeneratedNameDetection() {
+        assertTrue(RulesEngine.isAutoGeneratedFunctionName("FUN_00401000"));
+        assertTrue(RulesEngine.isAutoGeneratedFunctionName("SUB_00401000"));
+        assertTrue(RulesEngine.isAutoGeneratedFunctionName("thunk_FUN_00401000"));
+        assertFalse(RulesEngine.isAutoGeneratedFunctionName("maybe_init"));
+        assertFalse(RulesEngine.isAutoGeneratedFunctionName("main"));
+        assertFalse(RulesEngine.isAutoGeneratedFunctionName(null));
+
+        assertTrue(RulesEngine.isAutoGeneratedVariableName("local_2c"));
+        assertTrue(RulesEngine.isAutoGeneratedVariableName("param_1"));
+        assertFalse(RulesEngine.isAutoGeneratedVariableName("maybe_count"));
+        assertFalse(RulesEngine.isAutoGeneratedVariableName(null));
+    }
 }
 
 

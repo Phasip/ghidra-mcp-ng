@@ -48,9 +48,11 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -306,6 +308,141 @@ class ToolResourceIntegrationTest {
                         "address", addAddress.toString(),
                         "comment", "test",
                         "type", "PRE")));
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Comment rules (improvement_plan §4.2/§4.3) — end-to-end through set_comment, which is
+    // where the enclosing-function lookup that RulesEngineTest can only stub actually runs.
+    // -----------------------------------------------------------------------------------
+
+    /** A WriteTools whose only rules are the supplied comments: section. */
+    private WriteTools writeToolsWithCommentRules(String commentsYaml) throws IOException {
+        Path rulesFile = Files.createTempFile("comment_rules_", ".yaml");
+        Files.writeString(rulesFile, commentsYaml, StandardCharsets.UTF_8);
+        try {
+            return new WriteTools(programManager, RulesEngine.load(rulesFile.toFile()));
+        } finally {
+            Files.deleteIfExists(rulesFile);
+        }
+    }
+
+    @Test
+    void setComment_overConfiguredMaxLength_isRejectedAndNotWritten() throws Exception {
+        WriteTools restricted = writeToolsWithCommentRules(
+                "comments:\n  PLATE:\n    max_length: 20\n");
+        Address addAddress = functionAddress(readTools.searchFunctions(programName, "", 200).functions(), FN_ADD);
+
+        var violation = assertThrows(com.ghidramcpng.rules.NamingRuleViolation.class,
+                () -> restricted.setComment(json(
+                        "program", programName,
+                        "address", "0x" + addAddress,
+                        "comment", "x".repeat(21),
+                        "type", "PLATE")));
+        assertTrue(violation.getMessage().contains("20"),
+                "Message must state the limit: " + violation.getMessage());
+
+        // A rejected comment must not have been written — validation runs before the transaction.
+        Program program = programManager.getOrOpen(programName);
+        CodeUnit codeUnit = program.getListing().getCodeUnitAt(addAddress);
+        assertNull(codeUnit.getComment(CommentType.PLATE));
+
+        assertDoesNotThrow(() -> restricted.setComment(json(
+                "program", programName,
+                "address", "0x" + addAddress,
+                "comment", "short enough",
+                "type", "PLATE")));
+    }
+
+    @Test
+    void setComment_onAutoNamedFunction_isRejectedUntilItIsRenamed() throws Exception {
+        WriteTools restricted = writeToolsWithCommentRules(
+                "comments:\n  PLATE:\n    require_named_function: true\n");
+        Address addAddress = functionAddress(readTools.searchFunctions(programName, "", 200).functions(), FN_ADD);
+        String autoName = "FUN_" + addAddress;
+
+        // The fixture is compiled with symbols, so nothing in it is auto-named. Put the
+        // function back into the state the rule exists to catch.
+        writeTools.renameFunction(json(
+                "program", programName, "name_or_address", FN_ADD, "new_name", autoName));
+        try {
+            var violation = assertThrows(com.ghidramcpng.rules.NamingRuleViolation.class,
+                    () -> restricted.setComment(json(
+                            "program", programName,
+                            "address", "0x" + addAddress,
+                            "comment", "what this function does",
+                            "type", "PLATE")));
+            assertTrue(violation.getMessage().contains(autoName), violation.getMessage());
+            assertTrue(violation.getMessage().contains("rename_function"),
+                    "Message must name the next call: " + violation.getMessage());
+
+            // An EOL comment is unaffected — the rule is configured for PLATE only.
+            assertDoesNotThrow(() -> restricted.setComment(json(
+                    "program", programName,
+                    "address", "0x" + addAddress,
+                    "comment", "still allowed",
+                    "type", "EOL")));
+        } finally {
+            writeTools.renameFunction(json(
+                    "program", programName, "name_or_address", autoName, "new_name", FN_ADD));
+        }
+
+        assertDoesNotThrow(() -> restricted.setComment(json(
+                "program", programName,
+                "address", "0x" + addAddress,
+                "comment", "allowed now that it has a real name",
+                "type", "PLATE")));
+    }
+
+    @Test
+    void setComment_countsAutoNamedVariablesFromTheListing() throws Exception {
+        Address computeAddress =
+                functionAddress(readTools.searchFunctions(programName, "", 200).functions(), FN_COMPUTE);
+        Program program = programManager.getOrOpen(programName);
+        var function = program.getFunctionManager().getFunctionContaining(computeAddress);
+
+        int autoNamed = 0;
+        for (var variable : function.getAllVariables()) {
+            if (RulesEngine.isAutoGeneratedVariableName(variable.getName())) {
+                autoNamed++;
+            }
+        }
+
+        // At its own count the rule passes; one tighter it must fail. Deriving the threshold
+        // from the fixture keeps this independent of how many locals the analyzer happens to
+        // recover for this build.
+        WriteTools atLimit = writeToolsWithCommentRules(
+                "comments:\n  PLATE:\n    max_auto_named_variables: " + autoNamed + "\n");
+        assertDoesNotThrow(() -> atLimit.setComment(json(
+                "program", programName,
+                "address", "0x" + computeAddress,
+                "comment", "at the limit",
+                "type", "PLATE")));
+
+        // If the analyzer ever stops recovering auto-named locals for this fixture the reject
+        // case below becomes untestable. Skip loudly rather than passing on the pass case alone.
+        org.junit.jupiter.api.Assumptions.assumeTrue(autoNamed > 0,
+                "fixture function '" + FN_COMPUTE + "' has no auto-named listing variables");
+        WriteTools belowLimit = writeToolsWithCommentRules(
+                "comments:\n  PLATE:\n    max_auto_named_variables: " + (autoNamed - 1) + "\n");
+        var violation = assertThrows(com.ghidramcpng.rules.NamingRuleViolation.class,
+                () -> belowLimit.setComment(json(
+                        "program", programName,
+                        "address", "0x" + computeAddress,
+                        "comment", "one over the limit",
+                        "type", "PLATE")));
+        assertTrue(violation.getMessage().contains("get_function_variables"),
+                "Message must point at the tool that lists them: " + violation.getMessage());
+    }
+
+    @Test
+    void setComment_withNoCommentRules_isUnconstrained() {
+        Address addAddress = functionAddress(readTools.searchFunctions(programName, "", 200).functions(), FN_ADD);
+        // writeTools is built with RulesEngine.load(null) — the permissive default.
+        assertDoesNotThrow(() -> writeTools.setComment(json(
+                "program", programName,
+                "address", "0x" + addAddress,
+                "comment", "x".repeat(2000),
+                "type", "PLATE")));
     }
 
     @Test
