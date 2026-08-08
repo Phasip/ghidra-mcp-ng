@@ -77,10 +77,13 @@ public class ReadTools {
 
     private final ProgramManager mgr;
     private final int decompileTimeoutSeconds;
+    /** Batch dispatch target for the write tools; batch_tool_call is the only user. */
+    private final WriteTools writeTools;
 
-    public ReadTools(ProgramManager mgr, int decompileTimeoutSeconds) {
+    public ReadTools(ProgramManager mgr, int decompileTimeoutSeconds, WriteTools writeTools) {
         this.mgr = mgr;
         this.decompileTimeoutSeconds = decompileTimeoutSeconds;
+        this.writeTools = writeTools;
     }
 
     @GET
@@ -210,7 +213,8 @@ public class ReadTools {
     @POST
     @Path("/batch_tool_call")
     @Operation(operationId = "batch_tool_call",
-            summary = "Run an allowlisted read-only tool multiple times with different arguments and return ordered per-call results.")
+            summary = "Run one allowlisted read or write tool many times with different arguments, returning ordered per-call results. "
+                    + "Prefer this over one call per item when renaming or commenting several things in a function.")
     @ApiResponse(responseCode = "200", description = "Batch tool call results",
             content = @Content(schema = @Schema(implementation = BatchToolCallResponse.class)))
     public BatchToolCallResponse batchToolCall(
@@ -230,38 +234,64 @@ public class ReadTools {
         if ("batch_tool_call".equals(tool)) {
             throw new IllegalArgumentException("Nested batch_tool_call invocations are not supported.");
         }
-        if ("run_script".equals(tool)) {
-            throw new IllegalArgumentException(
-                "run_script is intentionally not batchable because scripts may mutate program state, " +
-                "open their own transactions, and run for a long time. Call run_script once per invocation.");
+        if (NOT_BATCHABLE.containsKey(tool)) {
+            throw new IllegalArgumentException(NOT_BATCHABLE.get(tool));
         }
         if (!BATCH_ALLOWLIST.contains(tool)) {
             throw new IllegalArgumentException(
                 "Tool '" + tool + "' is not allowlisted for batch_tool_call. " +
-                "batch_tool_call is for read-only tools only — pass the bare operationId " +
-                "(e.g. \"decompile_function\"), not a namespaced MCP tool name. " +
+                "Pass the bare operationId (e.g. \"rename_variable\"), not a namespaced MCP tool name. " +
                 "Allowed tools: " + String.join(", ", BATCH_ALLOWLIST) + ".");
         }
 
         List<BatchToolCallItemResult> results = new ArrayList<>();
+        int failed = 0;
         for (int i = 0; i < calls.size(); i++) {
             JsonObject args = calls.get(i);
             try {
                 Object result = dispatchBatchTool(tool, args);
                 results.add(new BatchToolCallItemResult(i, true, result, null));
             } catch (Exception e) {
+                // Each item is an independent call, so a failure does not abandon the rest —
+                // one bad name in fourteen renames should not cost the other thirteen.
                 results.add(new BatchToolCallItemResult(i, false, null, e.getMessage()));
+                failed++;
             }
         }
-        return new BatchToolCallResponse(tool, results, results.size());
+        return new BatchToolCallResponse(tool, results, results.size(), failed);
     }
 
+    /** Tools deliberately excluded from batching, each with the reason the agent needs. */
+    private static final Map<String, String> NOT_BATCHABLE = Map.of(
+            "run_script",
+            "run_script is intentionally not batchable because scripts may mutate program state, " +
+            "open their own transactions, and run for a long time. Call run_script once per invocation.",
+            "analyze_program",
+            "analyze_program is intentionally not batchable because a full analysis pass takes minutes " +
+            "and only needs to run once per program. Call analyze_program once per program.",
+            "import_binary",
+            "import_binary is intentionally not batchable because it runs a full analysis pass per file. " +
+            "Call import_binary once per binary.");
+
     /**
-     * Tools allowed inside batch_tool_call. Read-only operations only — write tools and
-     * script execution are excluded because they may take transactions or run for a long time.
-     * Order is preserved (TreeSet sorted) for stable error messages.
+     * Tools allowed inside batch_tool_call: every read tool, plus the write tools that make one
+     * short, self-contained edit. Each item runs its own transaction and saves on success, exactly
+     * as it would as a standalone call — batching removes the round-trips, not the durability.
+     * Program lifecycle tools (analyze/import) and script execution are excluded via
+     * {@link #NOT_BATCHABLE}. Order is preserved (TreeSet sorted) for stable error messages.
      */
     private static final java.util.Set<String> BATCH_ALLOWLIST = new java.util.TreeSet<>(java.util.List.of(
+            "add_struct_field",
+            "create_label",
+            "create_struct",
+            "remove_struct_field",
+            "rename_function",
+            "rename_global",
+            "rename_variable",
+            "replace_struct_field",
+            "set_comment",
+            "set_function_prototype",
+            "set_parameter_type",
             "check_connection",
             "decompile_function",
             "get_address_info",
@@ -1448,6 +1478,19 @@ public class ReadTools {
                 requireBodyText(args, "program"),
                 requireBodyText(args, "value"),
                 args.has("limit") && !args.get("limit").isJsonNull() ? args.get("limit").getAsInt() : 200);
+            // Write tools take the request body verbatim, so a batch item is that same body —
+            // there is nothing to unpack and no second spelling of any parameter to keep in sync.
+            case "rename_function" -> writeTools.renameFunction(args);
+            case "rename_variable" -> writeTools.renameVariable(args);
+            case "rename_global" -> writeTools.renameGlobal(args);
+            case "create_label" -> writeTools.createLabel(args);
+            case "set_function_prototype" -> writeTools.setFunctionPrototype(args);
+            case "set_parameter_type" -> writeTools.setParameterType(args);
+            case "create_struct" -> writeTools.createStruct(args);
+            case "add_struct_field" -> writeTools.addStructField(args);
+            case "remove_struct_field" -> writeTools.removeStructField(args);
+            case "replace_struct_field" -> writeTools.replaceStructField(args);
+            case "set_comment" -> writeTools.setComment(args);
             default -> throw new IllegalArgumentException(
                 "Tool '" + tool + "' is not allowlisted for batch_tool_call. " +
                 "Allowed tools: " + String.join(", ", BATCH_ALLOWLIST) + ".");
@@ -1515,16 +1558,20 @@ public class ReadTools {
         }
 
         public record BatchToolCallRequest(
-            @Schema(description = "Allowlisted read tool operationId to execute.", requiredMode = Schema.RequiredMode.REQUIRED)
+            @Schema(description = "Allowlisted read or write tool operationId to execute.", requiredMode = Schema.RequiredMode.REQUIRED)
             String tool,
-            @Schema(description = "List of argument objects. One tool call is executed per item.", requiredMode = Schema.RequiredMode.REQUIRED)
+            @Schema(description = "List of argument objects, each exactly what the tool takes on its own. "
+                    + "One tool call is executed per item, in order; a failed item does not stop the rest. "
+                    + "Maximum 50.", requiredMode = Schema.RequiredMode.REQUIRED)
             List<Map<String, Object>> calls) {
         }
 
         public record BatchToolCallResponse(
             String tool,
             List<BatchToolCallItemResult> results,
-            int count) {
+            int count,
+            @Schema(description = "Number of items in results with ok=false.")
+            int failed) {
         }
 
         public record BatchToolCallItemResult(

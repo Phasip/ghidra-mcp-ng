@@ -135,8 +135,8 @@ class ToolResourceIntegrationTest {
         importedProgram = null;
 
         programManager = new ProgramManager(ghidraProject);
-        readTools = new ReadTools(programManager, 60);
         writeTools = new WriteTools(programManager, RulesEngine.load((File) null));
+        readTools = new ReadTools(programManager, 60, writeTools);
         scriptTool = new ScriptTool(programManager, extensionScriptsDir);
     }
 
@@ -1288,8 +1288,8 @@ class ToolResourceIntegrationTest {
     private void reopenManager() throws Exception {
         programManager.closeAll();
         programManager = new ProgramManager(ghidraProject);
-        readTools = new ReadTools(programManager, 60);
         writeTools = new WriteTools(programManager, RulesEngine.load((File) null));
+        readTools = new ReadTools(programManager, 60, writeTools);
     }
 
     @Test

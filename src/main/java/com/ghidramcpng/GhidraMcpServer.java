@@ -164,8 +164,8 @@ public class GhidraMcpServer implements GhidraLaunchable {
         // Register tools
 
         ProgramManager mgr = new ProgramManager(ghidraProject);
-        ReadTools readTools = new ReadTools(mgr, rules.getDecompileTimeoutSeconds());
         WriteTools writeTools = new WriteTools(mgr, rules);
+        ReadTools readTools = new ReadTools(mgr, rules.getDecompileTimeoutSeconds(), writeTools);
         ScriptTool scriptTool = new ScriptTool(mgr);
 
         System.err.printf("[ghidra-mcp-ng] %d HTTP tool endpoints available%n",

@@ -334,12 +334,12 @@ Run Ghidra's full auto-analysis on an already-imported program and block until c
 
 ### `batch_tool_call`
 
-Run an allowlisted read-only tool multiple times with different arguments and return ordered per-call results.
+Run one allowlisted read or write tool many times with different arguments, returning ordered per-call results. Prefer this over one call per item when renaming or commenting several things in a function.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|:--------:|---------|-------------|
-| `tool` | string | yes |  | Allowlisted read tool operationId to execute. |
-| `calls` | array of object | yes |  | List of argument objects. One tool call is executed per item. |
+| `tool` | string | yes |  | Allowlisted read or write tool operationId to execute. |
+| `calls` | array of object | yes |  | List of argument objects, each exactly what the tool takes on its own. One tool call is executed per item, in order; a failed item does not stop the rest. Maximum 50. |
 
 ### `get_address_info`
 

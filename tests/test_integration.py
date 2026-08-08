@@ -246,6 +246,7 @@ class TestProgramMetadata:
         )
         assert result["tool"] == "get_function_info"
         assert result["count"] == 2
+        assert result["failed"] == 0
         assert all(item["ok"] for item in result["results"])
 
 
@@ -719,6 +720,124 @@ class TestWriteOperations:
         )
         assert err["ok"] is False
         assert "missing the 0x prefix" in err.get("error", "").lower()
+
+
+# ---------------------------------------------------------------------------
+# 11b. Batched writes
+# ---------------------------------------------------------------------------
+
+class TestBatchedWrites:
+    """
+    batch_tool_call is the single batching idiom for reads and writes alike —
+    renaming N locals must not cost N round-trips (improvement_plan §4.1).
+    """
+
+    def _variable_names(self, ghidra_server: GhidraClient, prog: str) -> list:
+        result = ghidra_server.ok(
+            "get_function_variables",
+            {"program": prog, "name_or_address": "add"},
+        )
+        return [v["name"] for v in result.get("variables", [])]
+
+    def test_batch_rename_variable(self, ghidra_server: GhidraClient, prog: str):
+        originals = self._variable_names(ghidra_server, prog)
+        assert originals, "add() should have variables"
+        renamed = [f"batch_renamed_{i}" for i in range(len(originals))]
+
+        result = ghidra_server.ok(
+            "batch_tool_call",
+            {
+                "tool": "rename_variable",
+                "calls": [
+                    {"program": prog, "name_or_address": "add",
+                     "variable_name": old, "new_name": new}
+                    for old, new in zip(originals, renamed)
+                ],
+            },
+        )
+        assert result["tool"] == "rename_variable"
+        assert result["count"] == len(originals)
+        assert result["failed"] == 0
+        assert all(item["ok"] for item in result["results"])
+        assert set(renamed) <= set(self._variable_names(ghidra_server, prog))
+
+        # Rename back so later tests see the original names.
+        restore = ghidra_server.ok(
+            "batch_tool_call",
+            {
+                "tool": "rename_variable",
+                "calls": [
+                    {"program": prog, "name_or_address": "add",
+                     "variable_name": new, "new_name": old}
+                    for old, new in zip(originals, renamed)
+                ],
+            },
+        )
+        assert restore["failed"] == 0
+
+    def test_batch_partial_failure_still_applies_the_rest(
+            self, ghidra_server: GhidraClient, prog: str):
+        original = self._variable_names(ghidra_server, prog)[0]
+        result = ghidra_server.ok(
+            "batch_tool_call",
+            {
+                "tool": "rename_variable",
+                "calls": [
+                    {"program": prog, "name_or_address": "add",
+                     "variable_name": "no_such_variable_xyz", "new_name": "never_applied"},
+                    {"program": prog, "name_or_address": "add",
+                     "variable_name": original, "new_name": "batch_partial_ok"},
+                ],
+            },
+        )
+        assert result["failed"] == 1
+        assert result["results"][0]["ok"] is False
+        assert result["results"][0]["error"]
+        assert result["results"][1]["ok"] is True
+        assert "batch_partial_ok" in self._variable_names(ghidra_server, prog)
+
+        ghidra_server.ok(
+            "rename_variable",
+            {"program": prog, "name_or_address": "add",
+             "variable_name": "batch_partial_ok", "new_name": original},
+        )
+
+    def test_batch_set_comment(self, ghidra_server: GhidraClient, prog: str):
+        addr = _func_address(ghidra_server, prog, "add")
+        result = ghidra_server.ok(
+            "batch_tool_call",
+            {
+                "tool": "set_comment",
+                "calls": [
+                    {"program": prog, "address": _hex(addr),
+                     "comment": "batch comment", "type": "PRE"},
+                    {"program": prog, "address": _hex(addr),
+                     "comment": "batch eol", "type": "EOL"},
+                ],
+            },
+        )
+        assert result["failed"] == 0
+        assert result["count"] == 2
+
+    def test_batch_rejects_analyze_program(
+            self, ghidra_server: GhidraClient, prog: str):
+        err = ghidra_server.call(
+            "batch_tool_call",
+            {"tool": "analyze_program", "calls": [{"program": prog}]},
+        )
+        assert err["ok"] is False
+        assert "not batchable" in err.get("error", "")
+
+    def test_batch_rejects_non_allowlisted_tool(
+            self, ghidra_server: GhidraClient, prog: str):
+        err = ghidra_server.call(
+            "batch_tool_call",
+            {"tool": "list_scripts", "calls": [{}]},
+        )
+        assert err["ok"] is False
+        assert "not allowlisted" in err.get("error", "")
+        # The message must name the alternatives so the agent can self-correct.
+        assert "rename_variable" in err.get("error", "")
 
 
 # ---------------------------------------------------------------------------
