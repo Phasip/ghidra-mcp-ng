@@ -48,6 +48,7 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -1161,6 +1162,41 @@ class ToolResourceIntegrationTest {
                         "type", "UNKNOWN_TYPE")));
         assertTrue(ex.getMessage().contains("UNKNOWN_TYPE"),
                 "Error must mention the unknown type: " + ex.getMessage());
+    }
+
+    // -------------------------------------------------------------------------
+    // ProgramManager – program resolution and caching
+    // -------------------------------------------------------------------------
+
+    /**
+     * list_project_files reports pathnames while a caller may equally pass the bare
+     * filename.  Both spellings must land on the same cache entry: if one of them misses,
+     * the program is re-opened on every call, which adds a consumer reference each time
+     * and re-runs the open-time analysis check.
+     */
+    @Test
+    void getOrOpen_filenameAndPathnameSpellingsShareOneCacheEntry() throws Exception {
+        Program byFilename = programManager.getOrOpen(programName);
+        int consumersAfterFirstOpen = byFilename.getConsumerList().size();
+
+        Program byPathname = programManager.getOrOpen("/" + programName);
+
+        assertSame(byFilename, byPathname, "Both spellings must resolve to the same program");
+        assertEquals(consumersAfterFirstOpen, byPathname.getConsumerList().size(),
+                "Second spelling must hit the cache; re-opening would add a consumer reference");
+
+        // And repeating either spelling must stay on the cached instance.
+        assertSame(byFilename, programManager.getOrOpen(programName));
+        assertEquals(consumersAfterFirstOpen, byFilename.getConsumerList().size(),
+                "Repeated lookups must not accumulate consumer references");
+    }
+
+    @Test
+    void getOrOpen_unknownProgram_throwsWithoutOpeningAnything() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> programManager.getOrOpen("/no/such/program.bin"));
+        assertTrue(ex.getMessage().contains("/no/such/program.bin"),
+                "Error must name the offending value: " + ex.getMessage());
     }
 
     // -------------------------------------------------------------------------

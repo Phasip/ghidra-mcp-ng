@@ -70,7 +70,9 @@ public class ProgramManager {
         // the same program could otherwise both miss the cache and open it twice,
         // leaking one consumer reference.
         synchronized (openPrograms) {
-            Program cached = findCached(programName);
+            // Fast path for the pathname spelling, which is what list_project_files
+            // returns and therefore what callers normally pass.
+            Program cached = openPrograms.get(programName);
             if (cached != null) return cached;
 
             DomainFile domainFile =
@@ -86,6 +88,14 @@ public class ProgramManager {
                 }
                 throw new IllegalArgumentException(msg);
             }
+
+            // findDomainFile accepts either the bare filename or the full pathname, but the
+            // cache is keyed on the pathname alone. A caller using the filename spelling
+            // therefore only reaches the cache after resolution; without this second lookup
+            // the program would be re-opened on every such call, adding a consumer reference
+            // each time and re-running the not-yet-analyzed check below.
+            cached = openPrograms.get(domainFile.getPathname());
+            if (cached != null) return cached;
 
             Object obj = domainFile.getDomainObject(consumer, true, false, TaskMonitor.DUMMY);
             if (!(obj instanceof Program)) {
@@ -104,13 +114,9 @@ public class ProgramManager {
                 ghidraProject.save(program);
             }
 
-            openPrograms.put(domainFile.getName(), program);
+            openPrograms.put(domainFile.getPathname(), program);
             return program;
         }
-    }
-
-    private Program findCached(String name) {
-        return openPrograms.get(name);
     }
 
     /**
@@ -402,7 +408,7 @@ public class ProgramManager {
         }
     }
 
-    /** Names of currently open programs (for internal lifecycle tracking). */
+    /** Pathnames of currently open programs (for internal lifecycle tracking). */
     List<String> listOpenPrograms() {
         return new ArrayList<>(openPrograms.keySet());
     }
