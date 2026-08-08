@@ -206,18 +206,36 @@ pair in a transaction, or route it through `withTransaction`.
 
 Effort: trivial. Removes the reason projects write `Analyze.java`-style workaround scripts.
 
-### 2.4 Eviction instead of drain — **see §3 before implementing**
+### 2.4 Eviction instead of drain — **DONE 2026-08-08**
 
-Add `ProgramManager.evict(Program)`: remove from `openPrograms`, `release(consumer)`, drop the
-`transactionLocks` entry. Call it on the failure path only — a script that threw, a script that left
-a transaction open, or any call that failed with a transaction-state exception.
+Added `ProgramManager.evict(Program, reason)`: remove from `openPrograms`, `release(consumer)`, drop
+the `transactionLocks` entry. Called on the failure path only — a script that threw, a script that
+returned while still holding a transaction, and (in `withTransaction`) a program whose own
+transaction state is broken. `drainLeakedEntries` and its ID arithmetic are deleted.
 
-The next `getOrOpen` reopens from the project database on disk with a clean transaction stack.
-Recovery goes from "restart the server" to "the next call is clean", and it replaces the ID-arithmetic
-drain with a handful of lines.
+Confirmed from Ghidra source that closing mid-transaction is safe, which the whole approach rests on:
+`DomainObjectAdapterDB.close()` → `transactionMgr.close()` only checks `lockCount` (set by
+`forceLock`/`lock`, not by transactions) and `DomainObjectTransactionManager.doClose()` is a no-op;
+`DBHandle.close()` then disposes the buffer manager unconditionally, discarding uncommitted changes.
 
-**Precondition: §3.2 must land first.** Do not enable eviction before the `withProgramLock` save gap
-is closed.
+Two things worth recording:
+
+- Removal is by identity (`values().removeIf(p -> p == program)`), because the cache is keyed on
+  pathname and callers hold a `Program`. Guarding the release on that removal also makes eviction
+  idempotent — `release` throws on an unknown consumer.
+- The "returned with a transaction open" error now reports
+  `TransactionInfo.getOpenSubTransactions()`, not `getDescription()`. The enclosing transaction is
+  the one `GhidraScript` opens around `run()` and is named after the script class, so the original
+  message named the script rather than the leaking call. The first version of the test caught this.
+
+Accepted trade-off: a concurrent caller that resolved the `Program` before eviction sees
+"program is closed" on that one call. That is recoverable — its next `getOrOpen` returns the fresh
+instance — and it is strictly better than leaving a permanently wedged program cached.
+
+Covered by `runScript_failure_evictsProgramButKeepsSavedWork` (fresh instance afterwards, work saved
+before the crash survives) and `runScript_returnsWithTransactionOpen_reportsItAndEvicts` (message
+names the leaked transaction, program reopens usable). Both plus the pre-existing
+`runScript_leakedTransaction_doesNotLockSubsequentCalls` verified to fail with `evict` stubbed out.
 
 ### 2.5 `run_script` transaction mode
 
@@ -426,7 +444,7 @@ Each step is independently shippable.
 3. ~~**§2.1** remove auto-analysis from `getOrOpen`~~ — **done.**
 4. ~~**§3.2** save at the end of a successful `withProgramLock`~~ — **done.** Covered by
    `runScript_changesPersistAfterReopen`, verified to fail without the save.
-5. **§2.4** eviction on the failure path; then delete `drainLeakedEntries`.
+5. ~~**§2.4** eviction on the failure path; then delete `drainLeakedEntries`~~ — **done.**
 6. **§2.6** server-side log file + `error_id`; map 404 to 404.
 7. **§4.1** batch `rename_variable`; then **§4.2** / **§4.3** comment rules.
 8. **§5.1** parameter renames + `TOOLS.md` regeneration; **§5.3** README.
