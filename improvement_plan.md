@@ -350,13 +350,44 @@ the plate. A ban alone does not fix that — it displaces the prose into PRE com
 
 Three changes, in leverage order:
 
-### 4.1 Make naming batchable (highest leverage)
+### 4.1 Make naming batchable (highest leverage) — **DONE 2026-08-08**
 
-Let `rename_variable` accept an array of `{current_name, new_name}` applied in one transaction.
 Renaming 14 locals is currently 14 round-trips against one call for a plate. The project B session
 log reached the same conclusion independently ("individual calls are 10-50× slower and burn MCP
-round trips"). An extension of an existing tool, per principle 9. **You cannot close the cheap wrong
-path without opening a cheap right one.**
+round trips"). **You cannot close the cheap wrong path without opening a cheap right one.**
+
+The plan said "let `rename_variable` accept an array". That was wrong, and the correction is the
+main thing worth recording: **`batch_tool_call` already exists as the generic batching idiom** — it
+was merely read-only by construction (`BATCH_ALLOWLIST`, plus a doc comment asserting write tools
+"may take transactions or run for a long time"). An array parameter on `rename_variable` would have
+been a *second* batching idiom for one tool, and the same argument would then have applied to
+`rename_function`, `rename_global`, `set_comment` and `set_parameter_type` in turn. That is exactly
+what principle 1 forbids. Widening the existing tool was the smaller and more consistent change.
+
+Implemented by allowlisting the eleven write tools that make one short, self-contained edit and
+dispatching them from `dispatchBatchTool`. Points worth keeping:
+
+- Dispatch for a write is a one-liner (`writeTools.renameFunction(args)`) because write tools take
+  the `JsonObject` body verbatim — a batch item *is* the standalone request body. The read tools
+  each need their query params unpacked; the write half has no second spelling of any parameter to
+  drift out of sync. `ReadTools` gained a `WriteTools` constructor argument for this; there is no
+  cycle, and `GhidraMcpServer` just constructs `WriteTools` first.
+- **Each item keeps its own transaction and its own save.** Batching removes round-trips, not
+  durability, so a batch is exactly N standalone calls with one HTTP hop — including on the failure
+  path, where the eviction logic in `withTransaction` re-resolves the program for the next item via
+  its own `openProgram`. One transaction for the whole batch was rejected: it would have meant
+  either restructuring every write tool to opt out of `runTransaction`, or an all-or-nothing rollback
+  that discards thirteen good renames because the fourteenth name was taken.
+- A failed item does not abandon the rest, and the response gained `failed` (count of `ok=false`).
+  Without it a partial failure is invisible at a glance in a 14-item result list, and a rename the
+  agent believes landed but did not is precisely the failure this section exists to prevent.
+- `analyze_program` and `import_binary` join `run_script` as deliberately not batchable — minutes
+  per call, once per program. They get their own reason (`NOT_BATCHABLE` map) rather than the
+  generic "not allowlisted", per coding standard 1.
+
+Covered by `tests/test_integration.py::TestBatchedWrites`: batched rename round-trip, partial
+failure (bad item reported, good item still applied and observable), batched `set_comment`, and both
+rejection paths.
 
 ### 4.2 Per-type comment caps in `rules.yaml`
 
@@ -469,7 +500,9 @@ Each step is independently shippable.
    `runScript_changesPersistAfterReopen`, verified to fail without the save.
 5. ~~**§2.4** eviction on the failure path; then delete `drainLeakedEntries`~~ — **done.**
 6. ~~**§2.6** server-side log file + `error_id`; map 404 to 404~~ — **done.** 405 came with it.
-7. **§4.1** batch `rename_variable`; then **§4.2** / **§4.3** comment rules.
+7. ~~**§4.1** batch `rename_variable`~~ — **done**, but as a widening of `batch_tool_call` rather
+   than an array parameter on `rename_variable`; see the section for why. Next: **§4.2** / **§4.3**
+   comment rules.
 8. **§5.1** parameter renames + `TOOLS.md` regeneration; **§5.3** README.
 9. **§5.2** `label_name` / `global_name` rule keys.
 10. **§5.4** the remaining small items.
