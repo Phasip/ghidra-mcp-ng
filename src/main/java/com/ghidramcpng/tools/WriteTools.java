@@ -630,7 +630,8 @@ public class WriteTools {
 
     @POST
     @Path("/import_binary")
-    @Operation(operationId = "import_binary", summary = "Import a binary file into the Ghidra project and run full auto-analysis. The returned program name can be used immediately with all other tools.")
+    @Operation(operationId = "import_binary", summary = "Import a binary file into the Ghidra project and run full auto-analysis. The returned program name can be used immediately with all other tools. "
+            + "The format is auto-detected; a headerless image (a raw flash dump or firmware blob) has nothing to detect, so pass language_id and base_address for those.")
     @ApiResponse(responseCode = "200", description = "Import result",
             content = @Content(schema = @Schema(implementation = ImportBinaryResponse.class)))
     public ImportBinaryResponse importBinary(
@@ -639,11 +640,13 @@ public class WriteTools {
             com.google.gson.JsonObject request) {
         String filePath = required(request, "file_path");
         String projectDir = optional(request, "project_dir", null);
+        String languageId = optional(request, "language_id", null);
+        String baseAddress = optional(request, "base_address", null);
 
         rules.validateImport(filePath, projectDir);
 
         try {
-            String programName = mgr.importBinary(filePath, projectDir);
+            String programName = mgr.importBinary(filePath, projectDir, languageId, baseAddress);
             return new ImportBinaryResponse(programName, projectDir != null ? projectDir : "/", true, null);
         } catch (IllegalArgumentException e) {
             throw e;
@@ -1104,7 +1107,15 @@ public class WriteTools {
                     "Intermediate folders are created automatically. " +
                     "Omit or pass \"/\" to place the binary in the project root. " +
                     "Subject to import.min_directory_depth and import.require_child_path constraints in rules.yaml.")
-            String project_dir) {
+            String project_dir,
+            @Schema(description = "Ghidra language/processor id, e.g. \"ARM:LE:32:Cortex\" or \"x86:LE:64:default\". " +
+                    "Omit for any file with a recognisable header (ELF, PE, Mach-O) — the loader detects it. " +
+                    "Required for a headerless image, which carries nothing to detect from.")
+            String language_id,
+            @Schema(description = "0-prefixed hex load address, e.g. \"0x08000000\". Applied before auto-analysis, " +
+                    "so recovered addresses and pointers are correct. Omit to load at the format's own base " +
+                    "(0x0 for a headerless image).")
+            String base_address) {
     }
 
     public record ImportBinaryResponse(

@@ -111,7 +111,7 @@ public class ScriptTool {
     @Operation(
             operationId = "get_script_description",
             summary = "Get metadata and description for a script — equivalent to clicking a script in Ghidra's Script Manager. " +
-                      "Call run_script with no args to get runtime help for MCP-provided scripts."
+                      "The bundled scripts also print their argument list when run_script is called with no args."
     )
     @ApiResponse(responseCode = "200", description = "Script metadata",
             content = @Content(schema = @Schema(implementation = ScriptDescriptionResponse.class)))
@@ -174,7 +174,9 @@ public class ScriptTool {
     @Operation(
             operationId = "run_script",
             summary = "Run a Ghidra script against an open program. Searches the user script directory and all extension script directories. " +
-                      "Call with no args (omit 'args') to receive the script's built-in help and argument description."
+                      "Omitting 'args' passes an empty argument list; by convention the bundled scripts treat that as a request for their built-in help "
+                      + "and print their argument list instead of running. That is a script-authoring convention, not server behaviour — a script that "
+                      + "genuinely takes no arguments should just run. Use get_script_description for a script's header documentation either way."
     )
     @ApiResponse(responseCode = "200", description = "Script execution result",
             content = @Content(schema = @Schema(implementation = RunScriptResponse.class)))

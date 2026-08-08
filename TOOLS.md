@@ -140,7 +140,7 @@ List all data type category paths in a program. Returns all categories; no pagin
 
 ### `search_data_types`
 
-Search for data types by name (case-insensitive). Pass an empty string to list all data types. Use list_data_type_categories to explore the category hierarchy.
+Search for data types by name (case-insensitive). Pass an empty string to list all data types. Use list_data_type_categories to explore the category hierarchy. Note that the C99 fixed-width spellings (int8_t..int64_t, uint8_t..uint64_t, size_t, ssize_t, intptr_t, uintptr_t, ptrdiff_t) are accepted by every tool that takes a type name even when they are absent here — they resolve to a type of exactly that width.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|:--------:|---------|-------------|
@@ -208,12 +208,14 @@ Create a new structure data type in the program's Data Type Manager.
 
 ### `import_binary`
 
-Import a binary file into the Ghidra project and run full auto-analysis. The returned program name can be used immediately with all other tools.
+Import a binary file into the Ghidra project and run full auto-analysis. The returned program name can be used immediately with all other tools. The format is auto-detected; a headerless image (a raw flash dump or firmware blob) has nothing to detect, so pass language_id and base_address for those.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|:--------:|---------|-------------|
 | `file_path` | string | yes |  | Absolute path to the binary file to import, e.g. /home/user/target.exe. |
 | `project_dir` | string |  |  | Project folder path where the binary will be saved, e.g. "hello/bin". Intermediate folders are created automatically. Omit or pass "/" to place the binary in the project root. Subject to import.min_directory_depth and import.require_child_path constraints in rules.yaml. |
+| `language_id` | string |  |  | Ghidra language/processor id, e.g. "ARM:LE:32:Cortex" or "x86:LE:64:default". Omit for any file with a recognisable header (ELF, PE, Mach-O) — the loader detects it. Required for a headerless image, which carries nothing to detect from. |
+| `base_address` | string |  |  | 0-prefixed hex load address, e.g. "0x08000000". Applied before auto-analysis, so recovered addresses and pointers are correct. Omit to load at the format's own base (0x0 for a headerless image). |
 
 ### `remove_struct_field`
 
@@ -316,7 +318,7 @@ Delete a script from the Ghidra user script directory.
 
 ### `run_script`
 
-Run a Ghidra script against an open program. Searches the user script directory and all extension script directories. Call with no args (omit 'args') to receive the script's built-in help and argument description.
+Run a Ghidra script against an open program. Searches the user script directory and all extension script directories. Omitting 'args' passes an empty argument list; by convention the bundled scripts treat that as a request for their built-in help and print their argument list instead of running. That is a script-authoring convention, not server behaviour — a script that genuinely takes no arguments should just run. Use get_script_description for a script's header documentation either way.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|:--------:|---------|-------------|
@@ -372,7 +374,7 @@ Get core program metadata including image base, executable format, language/comp
 
 ### `get_script_description`
 
-Get metadata and description for a script — equivalent to clicking a script in Ghidra's Script Manager. Call run_script with no args to get runtime help for MCP-provided scripts.
+Get metadata and description for a script — equivalent to clicking a script in Ghidra's Script Manager. The bundled scripts also print their argument list when run_script is called with no args.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|:--------:|---------|-------------|

@@ -658,7 +658,8 @@ public class ReadTools {
 
     @GET
     @Path("/search_data_types")
-    @Operation(operationId = "search_data_types", summary = "Search for data types by name (case-insensitive). Pass an empty string to list all data types. Use list_data_type_categories to explore the category hierarchy.")
+    @Operation(operationId = "search_data_types", summary = "Search for data types by name (case-insensitive). Pass an empty string to list all data types. Use list_data_type_categories to explore the category hierarchy. "
+            + "Note that the C99 fixed-width spellings (int8_t..int64_t, uint8_t..uint64_t, size_t, ssize_t, intptr_t, uintptr_t, ptrdiff_t) are accepted by every tool that takes a type name even when they are absent here — they resolve to a type of exactly that width.")
     @ApiResponse(responseCode = "200", description = "Data type search results",
             content = @Content(schema = @Schema(implementation = SearchDataTypesResponse.class)))
     public SearchDataTypesResponse searchDataTypes(

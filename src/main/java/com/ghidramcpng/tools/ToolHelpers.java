@@ -6,6 +6,7 @@ import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileOptions;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.data.AbstractIntegerDataType;
 import ghidra.program.model.data.BuiltInDataTypeManager;
 import ghidra.program.model.data.DataType;
 import ghidra.program.model.listing.Function;
@@ -339,6 +340,11 @@ public final class ToolHelpers {
             return builtInMatches.get(0);
         }
 
+        DataType stdint = resolveStdintName(program, trimmed);
+        if (stdint != null) {
+            return stdint;
+        }
+
         String suggestions = suggestDataTypeNames(program, trimmed);
         throw new IllegalArgumentException(
                 "Data type not found: '" + typeName + "'. " +
@@ -346,6 +352,40 @@ public final class ToolHelpers {
                         ? "Did you mean: " + suggestions + "? "
                         : "") +
                 "Use search_data_types to find valid type names (names are case-sensitive).");
+    }
+
+    private static final java.util.regex.Pattern STDINT_FIXED_WIDTH =
+            java.util.regex.Pattern.compile("^(u?)int(8|16|32|64)_t$");
+
+    /**
+     * Resolves a {@code <stdint.h>} spelling to a type of exactly the width it names.
+     *
+     * <p>Every prototype typed from a datasheet or a C header reaches for these, and a stripped
+     * binary carries no such definition, so each one otherwise costs a guaranteed round-trip to
+     * discover Ghidra's own spelling.
+     *
+     * <p>This runs only after every real lookup has failed, so a program that defines its own
+     * {@code uint32_t} (from DWARF, say) always wins. The width comes from
+     * {@code AbstractIntegerDataType}, which returns the program's generic spelling when the sizes
+     * agree ({@code uint} where int is 4 bytes) and a fixed-size builtin ({@code dword}) otherwise
+     * — so the result is never the wrong width for the target.
+     */
+    private static DataType resolveStdintName(Program program, String typeName) {
+        var dtm = program.getDataTypeManager();
+        java.util.regex.Matcher fixed = STDINT_FIXED_WIDTH.matcher(typeName);
+        if (fixed.matches()) {
+            int bytes = Integer.parseInt(fixed.group(2)) / 8;
+            return fixed.group(1).isEmpty()
+                    ? AbstractIntegerDataType.getSignedDataType(bytes, dtm)
+                    : AbstractIntegerDataType.getUnsignedDataType(bytes, dtm);
+        }
+        // Pointer-width spellings. Sized from the program's own pointer size, not assumed.
+        int pointerBytes = program.getDefaultPointerSize();
+        return switch (typeName) {
+            case "size_t", "uintptr_t" -> AbstractIntegerDataType.getUnsignedDataType(pointerBytes, dtm);
+            case "ssize_t", "intptr_t", "ptrdiff_t" -> AbstractIntegerDataType.getSignedDataType(pointerBytes, dtm);
+            default -> null;
+        };
     }
 
     /**

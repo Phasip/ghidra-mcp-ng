@@ -576,16 +576,36 @@ nowhere in `TOOLS.md` — the exact information the `{name, type}` → `{name, t
 load-bearing. It now renders `array of object {name, type_name}`. (The MCP bridge was never
 affected; `bridge.py` resolves item `$ref`s and passed the nested shape through all along.)
 
-### 5.4 Smaller items
+### 5.4 Smaller items — **DONE 2026-08-08**
 
-- `import_binary`: add optional `language_id` / `base_address` and use `BinaryLoader` with an
-  explicit `LanguageCompilerSpecPair`, so a headerless image does not need a bespoke script
-  (issue #4).
-- `findDataType`: alias the `<stdint.h>` spellings (`uint32_t` → `uint`, etc.). Every prototype typed
-  from a datasheet or header currently costs one guaranteed round-trip (issue #11).
-- `run_script`'s "no args = help" convention makes a genuinely zero-argument script need a dummy
-  argument. Either drop the convention or document it in `TOOLS.md` as a script-authoring
-  requirement.
+- **`import_binary` takes optional `language_id` / `base_address`** (issue #4). The plan said to
+  select `BinaryLoader` explicitly; that turned out to be unnecessary and slightly wrong.
+  `GhidraProject.importProgram(file, language, compilerSpec)` runs loader detection *constrained to
+  loaders that support the language*, so a headerless blob lands on `BinaryLoader` (the only one
+  that claims it) while an ELF with a language override still goes through `ElfLoader` and keeps its
+  sections. Forcing `BinaryLoader` would have thrown the ELF's structure away. One parameter, right
+  in both cases, no new mode flag.
+  - `base_address` is applied **before** analysis, via `setImageBase` in its own raw transaction —
+    not `withTransaction`, because the imported program has no saved `DomainFile` yet (still the
+    import proxy; `saveAs` has not run) and `withTransaction` saves on the way out. Relocating after
+    analysis would leave every recovered pointer and function address pointing at the old base.
+  - An unresolvable `language_id` names the closest real id via `suggestClosest` over
+    `getLanguageDescriptions`. No tool lists language ids, so without that it is a dead end.
+- **`findDataType` accepts the `<stdint.h>` spellings** (issue #11) — `int8_t`…`int64_t`,
+  `uint8_t`…`uint64_t`, plus `size_t`/`ssize_t`/`intptr_t`/`uintptr_t`/`ptrdiff_t` at the program's
+  pointer width. The plan's "`uint32_t` → `uint`" mapping is not safe as written: Ghidra's `uint`
+  takes its width from the program's data organisation, so the alias would be a *rename*, not a
+  width guarantee. Resolution instead goes through `AbstractIntegerDataType.getSignedDataType(n)` /
+  `getUnsignedDataType(n)`, which return the program's generic spelling when the widths agree and a
+  fixed-size builtin (`dword`) when they do not — so the result is never the wrong width. The alias
+  runs only after every real lookup has failed, so a program that defines its own `uint32_t` (from
+  DWARF) always wins, and `uint24_t` still errors rather than being coerced.
+- **`run_script`'s "no args = help" convention is documented, not enforced.** Worth stating plainly
+  because the old summary read as though the server implemented it: it does not. `run_script` passes
+  an empty argument list and the *bundled scripts* choose to print their argument list instead of
+  running. So a script that genuinely takes no arguments should just run — no dummy argument needed,
+  as long as its author does not copy the convention. Said so in the `run_script` and
+  `get_script_description` summaries, which is what `TOOLS.md` is generated from.
 
 ---
 
@@ -610,7 +630,23 @@ Each step is independently shippable.
    `item_count` was left alone (it is a read shape, not a page size).
 10. ~~**§5.2** `label_name` / `global_name` rule keys~~ — **done.** Unknown `naming:`/`comments:`
     keys are now rejected at load, which is what makes adding keys safe.
-11. **§5.4** the remaining small items.
+11. ~~**§5.4** the remaining small items~~ — **done.**
+
+**Still open after step 11:**
+
+- **§2.5** — `run_script`'s `transaction: "auto" | "none"` mode. Never made it into this ordering;
+  it is the only §2 item left. Until it lands, every `setLanguage`-style script still carries the
+  `end(true)` / `start()` hack that §2.4's eviction now catches rather than prevents.
+- **§5.1 leftover** — `search_functions` / `search_data_types` / `search_defined_strings` truncate
+  silently: they take a `limit` but return no `truncated`, so a full page is indistinguishable from
+  a complete result. Same fix the xref tools just got.
+- **§5.3 leftover** — `add_script` still snapshots, and `run_script` still cannot tell that the
+  registered copy has gone stale. The snapshot is now documented (a plausible success response
+  running old code is at least predictable), but comparing mtime/hash and re-copying or warning is
+  the real fix (issue #12).
+- **Outside this repo** — `projects/<project-c>/.claude/skills/ghidra-<project-c>/SKILL.md:31` (5 positionals,
+  missing the empty vmargs slot), and the three `~/SKILLS/*.md` files referencing the long-gone
+  `search_memory_strings` / `analyze_function_complete`.
 
 Per the repo's definition of done, each change needs integration tests covering the happy path *and*
 the error path, `make tools-docs` regenerated, and `gradle buildExtension` run before `pytest` — the

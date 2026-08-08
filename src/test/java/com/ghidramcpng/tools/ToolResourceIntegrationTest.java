@@ -24,6 +24,7 @@ import ghidra.framework.model.DomainFolder;
 import generic.jar.ResourceFile;
 import ghidra.program.model.listing.CodeUnit;
 import ghidra.program.model.listing.CommentType;
+import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.symbol.Symbol;
@@ -629,6 +630,54 @@ class ToolResourceIntegrationTest {
                 IllegalArgumentException.class,
                 () -> writeTools.importBinary(json("file_path", "/no/such/file.exe")));
         assertTrue(ex.getMessage().contains("File not found"));
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Headerless import (improvement_plan §5.4) — a raw flash dump carries no header, so the
+    // loader has nothing to detect and the caller must supply the language and load address.
+    // -----------------------------------------------------------------------------------
+
+    @Test
+    void importBinary_headerlessBlob_usesSuppliedLanguageAndBaseAddress() throws Exception {
+        Path blob = Files.createTempFile("headerless_", ".bin");
+        // Arbitrary bytes: the point is that nothing here identifies a format or a processor.
+        Files.write(blob, new byte[256]);
+        try {
+            WriteTools.ImportBinaryResponse response = writeTools.importBinary(json(
+                    "file_path", blob.toString(),
+                    "language_id", "ARM:LE:32:Cortex",
+                    "base_address", "0x08000000"));
+            assertTrue(response.success());
+
+            Program raw = programManager.getOrOpen(response.program());
+            assertEquals("0x08000000", "0x" + raw.getImageBase(),
+                    "The image must be loaded at the requested base");
+            assertEquals("ARM:LE:32:Cortex", raw.getLanguageID().getIdAsString());
+        } finally {
+            Files.deleteIfExists(blob);
+        }
+    }
+
+    @Test
+    void importBinary_unknownLanguageId_isRejectedWithASuggestion() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> writeTools.importBinary(json(
+                        "file_path", secondFixtureBinary.toString(),
+                        "language_id", "ARM:LE:32:Cortexx")));
+        assertTrue(ex.getMessage().contains("ARM:LE:32:Cortexx"),
+                "Error must name the offending id: " + ex.getMessage());
+        assertTrue(ex.getMessage().contains("ARM:LE:32:Cortex"),
+                "Error must suggest the closest real language id: " + ex.getMessage());
+    }
+
+    @Test
+    void importBinary_baseAddressWithoutHexPrefix_isRejected() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> writeTools.importBinary(json(
+                        "file_path", secondFixtureBinary.toString(),
+                        "base_address", "08000000")));
+        assertTrue(ex.getMessage().contains("0x prefix"),
+                "Error must name the missing prefix: " + ex.getMessage());
     }
 
     @Test
@@ -2487,6 +2536,62 @@ class ToolResourceIntegrationTest {
                 "searchDataTypes('dword') must return at least one result (built-in 'dword' type)");
         assertTrue(result.data_types().stream().anyMatch(dt -> dt.name().equals("dword")),
                 "searchDataTypes('dword') must include the exact built-in 'dword' type");
+    }
+
+    // -----------------------------------------------------------------------------------
+    // C99 fixed-width type spellings (improvement_plan §5.4)
+    // -----------------------------------------------------------------------------------
+
+    @Test
+    void findDataType_resolvesStdintSpellingsToTheirExactWidth() throws Exception {
+        Program program = programManager.getOrOpen(programName);
+        assertEquals(1, ToolHelpers.findDataType(program, "uint8_t").getLength());
+        assertEquals(2, ToolHelpers.findDataType(program, "int16_t").getLength());
+        assertEquals(4, ToolHelpers.findDataType(program, "uint32_t").getLength());
+        assertEquals(8, ToolHelpers.findDataType(program, "int64_t").getLength());
+        assertEquals(program.getDefaultPointerSize(),
+                ToolHelpers.findDataType(program, "size_t").getLength());
+        assertEquals(program.getDefaultPointerSize(),
+                ToolHelpers.findDataType(program, "ptrdiff_t").getLength());
+    }
+
+    @Test
+    void findDataType_stdintSpellingsComposeWithPointerAndArrayNotation() throws Exception {
+        Program program = programManager.getOrOpen(programName);
+        assertEquals(program.getDefaultPointerSize(),
+                ToolHelpers.findDataType(program, "uint32_t*").getLength());
+        assertEquals(16, ToolHelpers.findDataType(program, "uint8_t[16]").getLength());
+    }
+
+    @Test
+    void findDataType_unknownStdintLikeName_stillFails() throws Exception {
+        Program program = programManager.getOrOpen(programName);
+        // Only the real C99 widths are aliased — a plausible-looking invention must not be
+        // silently coerced into something of the wrong size.
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> ToolHelpers.findDataType(program, "uint24_t"));
+        assertTrue(ex.getMessage().contains("uint24_t"),
+                "Error must name the offending type: " + ex.getMessage());
+    }
+
+    @Test
+    void setFunctionPrototype_acceptsStdintSpellings() throws Exception {
+        assertDoesNotThrow(() -> writeTools.setFunctionPrototype(json(
+                "program", programName,
+                "name_or_address", FN_MULTIPLY,
+                "return_type", "int32_t",
+                "parameters", parameterArray(
+                        parameter("a", "uint32_t"),
+                        parameter("b", "uint8_t")))));
+
+        Program program = programManager.getOrOpen(programName);
+        Function multiply = ToolHelpers.findFunction(program, FN_MULTIPLY);
+        assertEquals(4, multiply.getParameter(0).getDataType().getLength(),
+                "uint32_t parameter must be 4 bytes wide");
+        assertEquals(1, multiply.getParameter(1).getDataType().getLength(),
+                "uint8_t parameter must be 1 byte wide");
+        assertEquals(4, multiply.getReturnType().getLength(),
+                "int32_t return must be 4 bytes wide");
     }
 
     @Test

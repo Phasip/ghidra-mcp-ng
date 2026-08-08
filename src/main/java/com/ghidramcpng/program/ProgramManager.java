@@ -1,13 +1,23 @@
 package com.ghidramcpng.program;
 
+import com.ghidramcpng.mcp.ApiSupport;
 import ghidra.base.project.GhidraProject;
 import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
 import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.DomainFolder;
 import ghidra.framework.model.Project;
 import ghidra.framework.model.TransactionInfo;
+import ghidra.program.model.address.Address;
+import ghidra.program.model.address.AddressOverflowException;
+import ghidra.program.model.lang.Language;
+import ghidra.program.model.lang.LanguageDescription;
+import ghidra.program.model.lang.LanguageID;
+import ghidra.program.model.lang.LanguageNotFoundException;
+import ghidra.program.model.lang.LanguageService;
 import ghidra.program.model.listing.Program;
+import ghidra.program.util.DefaultLanguageService;
 import ghidra.program.util.GhidraProgramUtilities;
+import ghidra.framework.store.LockException;
 import ghidra.util.task.TaskMonitor;
 
 import java.util.ArrayDeque;
@@ -144,25 +154,47 @@ public class ProgramManager {
      * Imports a binary file into the project, runs full auto-analysis, saves it,
      * and returns the program name for immediate use with {@link #getOrOpen(String)}.
      *
-     * @param filePath   absolute path to the binary file on disk
-     * @param projectDir project folder path (e.g. {@code "hello/bin"} or {@code "/"} for root).
-     *                   The folder is created automatically if it does not yet exist.
+     * @param filePath    absolute path to the binary file on disk
+     * @param projectDir  project folder path (e.g. {@code "hello/bin"} or {@code "/"} for root).
+     *                    The folder is created automatically if it does not yet exist.
+     * @param languageId  optional Ghidra language/processor id (e.g. {@code ARM:LE:32:Cortex}).
+     *                    Required for a headerless image, which carries nothing to detect from.
+     * @param baseAddress optional 0x-prefixed load address, applied before analysis
      * @return the program name as registered in the Ghidra project
      * @throws IllegalArgumentException if the file does not exist
      * @throws Exception if import or analysis fails
      */
-    public String importBinary(String filePath, String projectDir) throws Exception {
+    public String importBinary(String filePath, String projectDir, String languageId, String baseAddress)
+            throws Exception {
         java.io.File file = new java.io.File(filePath);
         if (!file.isFile()) {
             throw new IllegalArgumentException(
                     "File not found: '" + filePath + "'. Provide an absolute path to an existing binary file.");
         }
 
-        Program imported = ghidraProject.importProgram(file);
-        if (imported == null) {
-            throw new RuntimeException(
-                    "Ghidra could not auto-detect the format of '" + file.getName() + "'. " +
-                    "The file may be corrupted, empty, or in an unsupported format.");
+        Program imported;
+        if (languageId == null) {
+            imported = ghidraProject.importProgram(file);
+            if (imported == null) {
+                throw new RuntimeException(
+                        "Ghidra could not auto-detect the format of '" + file.getName() + "'. " +
+                        "If this is a headerless image (a raw flash dump or firmware blob) there is nothing " +
+                        "to detect — pass language_id, e.g. \"ARM:LE:32:Cortex\", and usually base_address too.");
+            }
+        } else {
+            Language language = resolveLanguage(languageId);
+            imported = ghidraProject.importProgram(file, language, language.getDefaultCompilerSpec());
+            if (imported == null) {
+                throw new RuntimeException(
+                        "No Ghidra loader could import '" + file.getName() + "' as language '" + languageId + "'. " +
+                        "The language may be incompatible with the file's detected format.");
+            }
+        }
+
+        // Before analysis, not after: the analyzers follow pointers and build the function graph,
+        // so relocating afterwards would leave every recovered address referring to the old base.
+        if (baseAddress != null) {
+            setImageBase(imported, baseAddress);
         }
 
         // Block until auto-analysis fully completes so no MCP tool ever sees an
@@ -176,6 +208,64 @@ public class ProgramManager {
         // importProgram() returns a proxy file with no saved location; saveAs establishes one.
         ghidraProject.saveAs(imported, folderPath, imported.getName(), true);
         return imported.getName();
+    }
+
+    /**
+     * Resolves a Ghidra language id, naming near matches when it does not exist. There is no
+     * tool that lists language ids, so an unresolvable id would otherwise be a dead end.
+     */
+    private static Language resolveLanguage(String languageId) {
+        LanguageService languageService = DefaultLanguageService.getLanguageService();
+        try {
+            return languageService.getLanguage(new LanguageID(languageId));
+        } catch (LanguageNotFoundException e) {
+            List<String> known = new ArrayList<>();
+            for (LanguageDescription description : languageService.getLanguageDescriptions(false)) {
+                known.add(description.getLanguageID().getIdAsString());
+            }
+            String suggestion = ApiSupport.suggestClosest(languageId, known);
+            throw new IllegalArgumentException(
+                    "Unknown language_id '" + languageId + "'. "
+                    + (suggestion != null
+                            ? "Did you mean '" + suggestion + "'? "
+                            : "Language ids look like 'ARM:LE:32:Cortex' or 'x86:LE:64:default'. ")
+                    + "This Ghidra install has " + known.size() + " languages; "
+                    + "the Ghidra GUI's language picker lists them all.");
+        }
+    }
+
+    /**
+     * Relocates a freshly imported program to {@code baseAddress}. Uses a raw transaction rather
+     * than {@link #withTransaction} because the program has no saved DomainFile yet — it is still
+     * the import proxy, and saveAs has not run.
+     */
+    private static void setImageBase(Program program, String baseAddress) {
+        if (!baseAddress.startsWith("0x") && !baseAddress.startsWith("0X")) {
+            throw new IllegalArgumentException(
+                    "base_address '" + baseAddress + "' is missing the 0x prefix. " +
+                    "Expected format: 0x followed by hex digits, e.g. 0x08000000");
+        }
+        Address base;
+        try {
+            long offset = Long.parseUnsignedLong(baseAddress.substring(2).trim(), 16);
+            base = program.getAddressFactory().getDefaultAddressSpace().getAddress(offset);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(
+                    "Invalid hex base_address '" + baseAddress + "'. " +
+                    "Expected format: 0x followed by hex digits, e.g. 0x08000000");
+        }
+        int txId = program.startTransaction("Set image base: " + baseAddress);
+        boolean success = false;
+        try {
+            program.setImageBase(base, true);
+            success = true;
+        } catch (AddressOverflowException | LockException e) {
+            throw new IllegalArgumentException(
+                    "Could not set the image base to " + baseAddress + " for '" + program.getName() + "': " +
+                    e.getMessage() + ". The image must fit within the address space of the chosen language.");
+        } finally {
+            program.endTransaction(txId, success);
+        }
     }
 
     /**
