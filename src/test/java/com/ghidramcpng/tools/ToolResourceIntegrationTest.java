@@ -1567,6 +1567,40 @@ class ToolResourceIntegrationTest {
     }
 
     @Test
+    void runScript_changesPersistAfterReopen() throws Exception {
+        // A GhidraScript's own transaction commits to the in-memory database but never writes
+        // the domain file, so without an explicit save its work is lost on restart.
+        String scriptClassName = "PersistTest" + UUID.randomUUID().toString().replace("-", "");
+        String label = "maybe_script_persist_probe";
+        Path sourceDir = Files.createTempDirectory("ghidra-mcp-ng-script-persist");
+        Path sourceScript = sourceDir.resolve(scriptClassName + ".java");
+        Files.writeString(sourceScript,
+                "import ghidra.app.script.GhidraScript;\n" +
+                "import ghidra.program.model.symbol.SourceType;\n" +
+                "public class " + scriptClassName + " extends GhidraScript {\n" +
+                "    @Override\n" +
+                "    public void run() throws Exception {\n" +
+                "        createLabel(currentProgram.getMinAddress(), \"" + label + "\", true,\n" +
+                "                SourceType.USER_DEFINED);\n" +
+                "    }\n" +
+                "}\n",
+                StandardCharsets.UTF_8);
+
+        String filename = scriptTool.addScript(json("file_path", sourceScript.toString())).filename();
+        assertTrue(scriptTool.runScript(json(
+                "program", programName,
+                "filename", filename)).success());
+
+        reopenManager();
+
+        Program reopened = programManager.getOrOpen(programName);
+        assertFalse(reopened.getSymbolTable().getGlobalSymbols(label).isEmpty(),
+                "A label created by a successful script must survive close-and-reopen");
+
+        scriptTool.deleteScript(json("filename", filename));
+    }
+
+    @Test
     void runScript_executesScriptAndCapturesOutput() throws Exception {
         String scriptClassName = "RunScriptTest" + UUID.randomUUID().toString().replace("-", "");
         Path sourceDir = Files.createTempDirectory("ghidra-mcp-ng-script-run");

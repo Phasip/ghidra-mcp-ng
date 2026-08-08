@@ -274,6 +274,11 @@ public class ProgramManager {
      * transaction. Use this to serialize operations (e.g. script execution) that manage their
      * own transactions internally, so they cannot run concurrently with
      * {@link #withTransaction} calls on the same program.
+     *
+     * <p>On success the program is saved, matching {@link #withTransaction}. A GhidraScript's
+     * own transaction commits to the in-memory database but never writes the domain file, so
+     * without this a successful script's work — a memory map, a batch of applied types — would
+     * survive only until the server stopped.
      */
     public <T> T withProgramLock(Program program, java.util.concurrent.Callable<T> action)
             throws Exception {
@@ -284,10 +289,10 @@ public class ProgramManager {
         }
         try {
             boolean actionSucceeded = false;
+            T result;
             try {
-                T result = action.call();
+                result = action.call();
                 actionSucceeded = true;
-                return result;
             } finally {
                 TransactionInfo leftover = program.getCurrentTransactionInfo();
                 if (leftover != null) {
@@ -306,6 +311,19 @@ public class ProgramManager {
                     // If the action threw, the original exception is propagating — don't shadow it.
                 }
             }
+
+            // Reached only when the action returned normally and left no transaction open.
+            if (program.isChanged()) {
+                try {
+                    program.getDomainFile().save(TaskMonitor.DUMMY);
+                } catch (Exception e) {
+                    throw new RuntimeException("The operation succeeded but saving '" +
+                            program.getName() + "' failed: " + e.getMessage() +
+                            ". Its changes exist in memory only and will be lost when the " +
+                            "server stops.", e);
+                }
+            }
+            return result;
         } finally {
             lock.unlock();
         }
