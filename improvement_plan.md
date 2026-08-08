@@ -261,7 +261,7 @@ So every `rename_function`, `rename_variable`, `set_function_prototype`, `create
 HTTP response returns**. Eviction drops an in-memory handle; it cannot touch anything already on
 disk. Reopening reads it all back.
 
-### 3.2 Script results are **not** currently safe — fix before enabling eviction
+### 3.2 Script results are **not** currently safe — fix before enabling eviction — **DONE 2026-08-08**
 
 `withProgramLock` (`ProgramManager.java:236-270`) has **no save call**. It takes the lock, runs the
 action, checks for a leaked transaction, unlocks. `GhidraScript.execute()`'s `end(true)` commits to
@@ -424,8 +424,8 @@ Each step is independently shippable.
 2. ~~**§2.3** transact `analyze_program`~~ — **done.** Swapped ahead of §2.1: rejecting unanalyzed
    programs while `analyze_program` was still broken would have left no way out.
 3. ~~**§2.1** remove auto-analysis from `getOrOpen`~~ — **done.**
-4. **§3.2** save at the end of a successful `withProgramLock` — a latent data-loss bug in its own
-   right, and the precondition for step 5.
+4. ~~**§3.2** save at the end of a successful `withProgramLock`~~ — **done.** Covered by
+   `runScript_changesPersistAfterReopen`, verified to fail without the save.
 5. **§2.4** eviction on the failure path; then delete `drainLeakedEntries`.
 6. **§2.6** server-side log file + `error_id`; map 404 to 404.
 7. **§4.1** batch `rename_variable`; then **§4.2** / **§4.3** comment rules.
