@@ -237,14 +237,30 @@ before the crash survives) and `runScript_returnsWithTransactionOpen_reportsItAn
 names the leaked transaction, program reopens usable). Both plus the pre-existing
 `runScript_leakedTransaction_doesNotLockSubsequentCalls` verified to fail with `evict` stubbed out.
 
-### 2.5 `run_script` transaction mode
+### 2.5 `run_script` transaction mode — **NOT IMPLEMENTABLE as specified; documented instead 2026-08-08**
 
-Add an optional `transaction` field: `"auto"` (default — today's behaviour, `GhidraScript.execute()`
-holds a transaction for the whole of `run()`) and `"none"` (drive `run()` outside a transaction).
+The proposal was an optional `transaction` field: `"auto"` (default — today's behaviour,
+`GhidraScript.execute()` holds a transaction for the whole of `run()`) and `"none"` (drive `run()`
+outside a transaction), removing the `end(true)` / `start()` hack that every `setLanguage`-style
+script carries.
 
-This removes the `end(true)` / `start()` hack that every `setLanguage`-style script currently has to
-carry, and which is easy to get wrong in a way that wedges the program. An option on an existing
-tool, per design principle 9.
+**`"none"` cannot be built on Ghidra's public API.** The transaction is opened by
+`GhidraScript.executeNormal()`, which is `private` and does exactly `start(); run(); end(true)`.
+Its only caller, `doExecute`, is also `private`, and `run()` itself is `protected abstract` — so a
+non-subclass in another package has no way to reach it. Driving `run()` directly would mean
+reflecting into private members *and* re-implementing `doExecute`'s setup
+(`loadVariablesFromState`, `loadPropertiesFile`, the writer/monitor/state assignment,
+`updateStateFromVariables`, `doCleanup`), half of which is private too. That is a hack that breaks
+on any Ghidra update and fails by silently skipping setup — strictly worse than the two-line
+workaround it replaces.
+
+What was done instead: `run_script`'s summary now states the mechanism outright — Ghidra holds a
+transaction around `run()`, a script must not open an outer one, an operation that manages its own
+transaction must be bracketed by `end(true)` / `start()`, and returning with an extra transaction
+open evicts the program. The guesswork was the real cost; §2.4 already turned the failure from a
+permanent wedge into an evict-and-reopen.
+
+Worth revisiting only if Ghidra ever exposes an execute-without-transaction entry point.
 
 ### 2.6 Log the actual exception server-side — **DONE 2026-08-08**
 
@@ -634,9 +650,9 @@ Each step is independently shippable.
 
 **Still open after step 11:**
 
-- **§2.5** — `run_script`'s `transaction: "auto" | "none"` mode. Never made it into this ordering;
-  it is the only §2 item left. Until it lands, every `setLanguage`-style script still carries the
-  `end(true)` / `start()` hack that §2.4's eviction now catches rather than prevents.
+- **§2.5** — closed as not implementable; see the section. `run_script` documents the transaction
+  contract instead, and the `end(true)` / `start()` bracket stays the way to run a
+  `setLanguage`-style operation.
 - **§5.1 leftover** — `search_functions` / `search_data_types` / `search_defined_strings` truncate
   silently: they take a `limit` but return no `truncated`, so a full page is indistinguishable from
   a complete result. Same fix the xref tools just got.

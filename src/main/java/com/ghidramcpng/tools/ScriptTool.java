@@ -176,7 +176,11 @@ public class ScriptTool {
             summary = "Run a Ghidra script against an open program. Searches the user script directory and all extension script directories. " +
                       "Omitting 'args' passes an empty argument list; by convention the bundled scripts treat that as a request for their built-in help "
                       + "and print their argument list instead of running. That is a script-authoring convention, not server behaviour — a script that "
-                      + "genuinely takes no arguments should just run. Use get_script_description for a script's header documentation either way."
+                      + "genuinely takes no arguments should just run. Use get_script_description for a script's header documentation either way. "
+                      + "Ghidra runs the script inside a transaction it opens around run(), so a script must NOT open its own outer transaction. "
+                      + "An operation that manages its own transaction (Program.setLanguage is the usual one) must be wrapped in end(true) before "
+                      + "and start() after, or it throws; returning from run() with an extra transaction still open is an error and the program is "
+                      + "evicted and reopened."
     )
     @ApiResponse(responseCode = "200", description = "Script execution result",
             content = @Content(schema = @Schema(implementation = RunScriptResponse.class)))
