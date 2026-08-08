@@ -1,7 +1,7 @@
 # ghidra-mcp-ng — improvement plan
 
-Status: **proposed, nothing implemented.** Written 2026-08-08 from an audit of the two field bug
-logs plus a read of the current source. No code in this repo was changed.
+Written 2026-08-08 from an audit of the two field bug logs plus a read of the current source.
+Sections are marked DONE as they land; §6 carries the running order.
 
 Source material:
 
