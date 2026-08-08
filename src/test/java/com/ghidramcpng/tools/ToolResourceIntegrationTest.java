@@ -1216,6 +1216,29 @@ class ToolResourceIntegrationTest {
         assertNotNull(programManager.getOrOpen("/" + programName));
     }
 
+    /**
+     * The analyzers run on the calling thread and write to the program, so analyze_program
+     * needs a transaction open. Without one it dies with "Transaction has not been started"
+     * before any analysis happens.
+     */
+    @Test
+    void analyzeProgram_succeedsAndMarksProgramAnalyzed() throws Exception {
+        Program program = programManager.getOrOpen(programName);
+        ghidra.program.util.GhidraProgramUtilities.resetAnalysisFlags(program);
+        assertFalse(program.getOptions(Program.PROGRAM_INFO)
+                        .getBoolean(Program.ANALYZED_OPTION_NAME, false),
+                "Precondition: the program must start out unmarked");
+
+        WriteTools.AnalyzeProgramResponse response =
+                writeTools.analyzeProgram(json("program", programName));
+
+        assertTrue(response.success());
+        assertTrue(response.function_count() > 0, "Analysis must have found functions");
+        assertTrue(program.getOptions(Program.PROGRAM_INFO)
+                        .getBoolean(Program.ANALYZED_OPTION_NAME, false),
+                "Analysis must record that it ran, or it is retried on every access");
+    }
+
     @Test
     void getOrOpen_unknownProgram_throwsWithoutOpeningAnything() {
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,

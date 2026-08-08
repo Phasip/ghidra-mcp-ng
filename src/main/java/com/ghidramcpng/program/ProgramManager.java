@@ -7,6 +7,7 @@ import ghidra.framework.model.DomainFolder;
 import ghidra.framework.model.Project;
 import ghidra.framework.model.TransactionInfo;
 import ghidra.program.model.listing.Program;
+import ghidra.program.util.GhidraProgramUtilities;
 import ghidra.util.task.TaskMonitor;
 
 import java.util.ArrayDeque;
@@ -175,8 +176,7 @@ public class ProgramManager {
      * is desired after large structural changes.
      *
      * <p>Acquires the per-program lock for the duration so concurrent write tools wait.
-     * Auto-analysis manages its own internal Ghidra transactions, so this method does
-     * NOT open one of its own.
+     * The transaction is opened by {@link #analyzeProgramBlocking(Program)}.
      */
     public void analyzeProgram(Program program) throws Exception {
         ReentrantLock lock = transactionLocks.computeIfAbsent(program, p -> new ReentrantLock());
@@ -200,12 +200,28 @@ public class ProgramManager {
      * whose implementation may hand work off and return before analysis is fully complete.
      * For MCP we need a stronger guarantee: once a program is returned from open/import,
      * no caller should ever observe it in a partially analyzed state.
+     *
+     * <p>The analyzers run on the calling thread and write to the program — reAnalyzeAll
+     * resets analysis state, and analyzers such as ARM's FunctionStartAnalyzer write context
+     * registers — so a transaction must be open for the duration. Without one the first
+     * writing analyzer throws "Transaction has not been started".
      */
     private static void analyzeProgramBlocking(Program program) {
-        AutoAnalysisManager analysisManager = AutoAnalysisManager.getAnalysisManager(program);
-        analysisManager.initializeOptions();
-        analysisManager.reAnalyzeAll(null);
-        analysisManager.waitForAnalysis(null, TaskMonitor.DUMMY);
+        int txId = program.startTransaction("Auto-analysis");
+        boolean success = false;
+        try {
+            AutoAnalysisManager analysisManager = AutoAnalysisManager.getAnalysisManager(program);
+            analysisManager.initializeOptions();
+            analysisManager.reAnalyzeAll(null);
+            analysisManager.waitForAnalysis(null, TaskMonitor.DUMMY);
+            success = true;
+        } finally {
+            program.endTransaction(txId, success);
+        }
+        // Neither AutoAnalysisManager nor GhidraProject.analyze() records that analysis ran;
+        // only markProgramAnalyzed does. Callers gate on that flag, so leaving it unset means
+        // analysis is attempted again on every access. (It opens its own transaction.)
+        GhidraProgramUtilities.markProgramAnalyzed(program);
     }
 
     /**
