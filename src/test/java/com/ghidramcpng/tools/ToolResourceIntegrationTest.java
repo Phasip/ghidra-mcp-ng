@@ -125,6 +125,9 @@ class ToolResourceIntegrationTest {
 
         importedProgram = ghidraProject.importProgram(compiledFixtureBinary.toFile());
         ghidraProject.analyze(importedProgram);
+        // GhidraProject.analyze() does not record that it ran; import_binary marks the program
+        // via analyzeProgramBlocking, and getOrOpen rejects a program that is not marked.
+        ghidra.program.util.GhidraProgramUtilities.markProgramAnalyzed(importedProgram);
         ghidraProject.saveAs(importedProgram, "/", importedProgram.getName(), true);
         programName = importedProgram.getDomainFile().getName();
         ghidraProject.close(importedProgram);
@@ -1237,6 +1240,30 @@ class ToolResourceIntegrationTest {
         assertTrue(program.getOptions(Program.PROGRAM_INFO)
                         .getBoolean(Program.ANALYZED_OPTION_NAME, false),
                 "Analysis must record that it ran, or it is retried on every access");
+    }
+
+    /**
+     * Opening a program used to trigger auto-analysis, so a read could block for minutes or —
+     * when analysis failed — wedge the program for every later request. Report it instead.
+     * analyze_program itself must still be able to open the program, or there is no way out.
+     */
+    @Test
+    void getOrOpen_unanalyzedProgram_reportsItAndAnalyzeProgramStillWorks() throws Exception {
+        Program program = programManager.getOrOpen(programName);
+        ghidra.program.util.GhidraProgramUtilities.resetAnalysisFlags(program);
+        program.getDomainFile().save(TaskMonitor.DUMMY);   // the reopen below reads from disk
+        programManager.closeAll();
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> programManager.getOrOpen(programName));
+        assertTrue(ex.getMessage().contains("has not been analyzed"),
+                "Error must say the program is unanalyzed: " + ex.getMessage());
+        assertTrue(ex.getMessage().contains("analyze_program"),
+                "Error must name the tool that fixes it: " + ex.getMessage());
+
+        // The escape hatch: analyze_program opens it anyway, and afterwards reads work.
+        assertTrue(writeTools.analyzeProgram(json("program", programName)).success());
+        assertNotNull(programManager.getOrOpen(programName));
     }
 
     @Test

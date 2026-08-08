@@ -326,7 +326,7 @@ Run a Ghidra script against an open program. Searches the user script directory 
 
 ### `analyze_program`
 
-Run Ghidra's full auto-analysis on an already-imported program and block until completion. Use this when a project was imported outside MCP (e.g. via the Ghidra GUI) and analysis was not run, or to re-run analysis after large structural edits. import_binary already analyzes on import — you do not need to call this after a successful import.
+Run Ghidra's full auto-analysis on an already-imported program and block until completion. Required once for any program imported outside MCP (e.g. via the Ghidra GUI): every other tool rejects a program that has never been analyzed. Also use it to re-run analysis after large structural edits. import_binary already analyzes on import — you do not need to call this after a successful import.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|:--------:|---------|-------------|

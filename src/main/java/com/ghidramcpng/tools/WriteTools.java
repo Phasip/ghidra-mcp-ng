@@ -569,9 +569,10 @@ public class WriteTools {
     @Path("/analyze_program")
     @Operation(operationId = "analyze_program",
             summary = "Run Ghidra's full auto-analysis on an already-imported program and block until completion. " +
-                    "Use this when a project was imported outside MCP (e.g. via the Ghidra GUI) and analysis was not run, " +
-                    "or to re-run analysis after large structural edits. import_binary already analyzes on import — you " +
-                    "do not need to call this after a successful import.")
+                    "Required once for any program imported outside MCP (e.g. via the Ghidra GUI): every other tool " +
+                    "rejects a program that has never been analyzed. Also use it to re-run analysis after large " +
+                    "structural edits. import_binary already analyzes on import — you do not need to call this after " +
+                    "a successful import.")
     @ApiResponse(responseCode = "200", description = "Analysis result",
             content = @Content(schema = @Schema(implementation = AnalyzeProgramResponse.class)))
     public AnalyzeProgramResponse analyzeProgram(
@@ -579,7 +580,9 @@ public class WriteTools {
                     content = @Content(schema = @Schema(implementation = AnalyzeProgramRequest.class)))
             com.google.gson.JsonObject request) {
         String programName = required(request, "program");
-        Program program = openProgram(programName);
+        // The one tool that must accept an unanalyzed program — every other open requires
+        // analysis to have run already.
+        Program program = openProgramForAnalysis(programName);
         try {
             mgr.analyzeProgram(program);
         } catch (RuntimeException e) {
@@ -620,6 +623,17 @@ public class WriteTools {
             return mgr.getOrOpen(programName);
         } catch (RuntimeException e) {
             throw e; // IllegalArgumentException → 400, others bubble as-is → 500
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to open program '" + programName + "': " + e.getMessage(), e);
+        }
+    }
+
+    /** As {@link #openProgram}, but permits a program that has not been analyzed yet. */
+    private Program openProgramForAnalysis(String programName) {
+        try {
+            return mgr.getOrOpenForAnalysis(programName);
+        } catch (RuntimeException e) {
+            throw e;
         } catch (Exception e) {
             throw new RuntimeException("Failed to open program '" + programName + "': " + e.getMessage(), e);
         }

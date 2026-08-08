@@ -61,9 +61,23 @@ public class ProgramManager {
      * returned by {@code list_project_files}.
      *
      * @param programName name as provided by the MCP client
-     * @throws IllegalArgumentException if the program cannot be found in the project
+     * @throws IllegalArgumentException if the program cannot be found, the name is
+     *         ambiguous, or the program has not been analyzed
      */
     public Program getOrOpen(String programName) throws Exception {
+        return getOrOpen(programName, true);
+    }
+
+    /**
+     * Opens a program that is allowed to be unanalyzed. Only {@code analyze_program} should
+     * use this — every other tool needs an analyzed program, and opening one for analysis is
+     * the single case that cannot require analysis to have happened already.
+     */
+    public Program getOrOpenForAnalysis(String programName) throws Exception {
+        return getOrOpen(programName, false);
+    }
+
+    private Program getOrOpen(String programName, boolean requireAnalyzed) throws Exception {
         if (programName == null || programName.isBlank()) {
             throw new IllegalArgumentException("Program name must not be empty");
         }
@@ -95,7 +109,7 @@ public class ProgramManager {
             // cache is keyed on the pathname alone. A caller using the filename spelling
             // therefore only reaches the cache after resolution; without this second lookup
             // the program would be re-opened on every such call, adding a consumer reference
-            // each time and re-running the not-yet-analyzed check below.
+            // each time.
             cached = openPrograms.get(domainFile.getPathname());
             if (cached != null) return cached;
 
@@ -108,12 +122,17 @@ public class ProgramManager {
             }
             Program program = (Program) obj;
 
-            // Auto-analyze programs that were imported manually (e.g. via the Ghidra GUI)
-            // without running analysis. Without this, every read/write tool would operate
-            // on an unanalyzed binary and produce incomplete or missing results.
-            if (!program.getOptions(Program.PROGRAM_INFO).getBoolean(Program.ANALYZED_OPTION_NAME, false)) {
-                analyzeProgramBlocking(program);
-                ghidraProject.save(program);
+            // Opening a program must not silently analyze it. Analysis is a long, mutating
+            // operation that already has its own tool, and running it from here meant a read
+            // could block for minutes, or — if it failed — leave the program uncached so that
+            // every later request, reads included, retried and failed the same way.
+            // Report it instead and let the caller run analysis deliberately.
+            if (requireAnalyzed && !GhidraProgramUtilities.isAnalyzed(program)) {
+                program.release(consumer);
+                throw new IllegalArgumentException(
+                        "Program '" + domainFile.getPathname() + "' has not been analyzed. " +
+                        "Run analyze_program on it first — an unanalyzed program has few or no " +
+                        "functions defined, so reads return incomplete results.");
             }
 
             openPrograms.put(domainFile.getPathname(), program);
