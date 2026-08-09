@@ -728,7 +728,12 @@ Each step is independently shippable.
     keys are now rejected at load, which is what makes adding keys safe.
 11. ~~**§5.4** the remaining small items~~ — **done.**
 
-**Still open after step 11:**
+**After step 11 — the plan is complete.** All 14 audited issues in §0 are closed, as is §2.5 (not
+implementable on Ghidra's public API, documented instead). One deliberate partial: issue #7 asked
+for `limit` *and* `offset` on the xref tools and only `limit` landed, because paging a reference set
+by offset means re-walking it per page. `truncated` plus the `ref_types` / address-range filters
+cover the case it was reported for; add `offset` only if a real program produces more than 5000
+matching xrefs to one address after filtering.
 
 - **§2.5** — closed as not implementable; see the section. `run_script` documents the transaction
   contract instead, and the `end(true)` / `start()` bracket stays the way to run a
@@ -738,9 +743,26 @@ Each step is independently shippable.
 - ~~**§5.3 leftover** — `add_script` snapshots and `run_script` runs the stale copy~~ — **done
   2026-08-09** as §5.5: the source path is registered and re-copied on change, and the run reports
   which copy it ran.
-- **Outside this repo** — `projects/<project-c>/.claude/skills/ghidra-<project-c>/SKILL.md:31` (5 positionals,
-  missing the empty vmargs slot), and the three `~/SKILLS/*.md` files referencing the long-gone
-  `search_memory_strings` / `analyze_function_complete`.
+- ~~**Outside this repo**~~ — **done 2026-08-09**, and it grew once the in-repo work landed:
+  - `projects/<project-c>/.claude/skills/ghidra-<project-c>/SKILL.md` — the empty vmargs slot, with the same
+    explanatory comment the working `ghidra-<project-b>` copy carries.
+  - `~/SKILLS/fmt_string_lookup.md`, `library_fidb_workflow.md`, `debug_log_bulk_naming.md` —
+    `search_memory_strings` → `search_defined_strings` (plus `search_bytes` for text Ghidra has not
+    defined as data, which is what the old tool was actually being used for), and
+    `analyze_function_complete` → `decompile_function` + `get_function_info`.
+  - `~/.claude/skills/reversing/SKILL.md` — **this was the one that mattered.** Not on the original
+    list, but every item in its "known-broken" section was fixed by this work, so the skill was
+    actively telling agents to route around things that now work: run analysis from a script,
+    re-`add_script` before every run, avoid C99 type names, apply labels from a GhidraScript to
+    bypass the rules engine. Left alone it would have kept the workarounds alive after the bugs
+    were gone — which is worse than the bugs, since a bypass hides the write from every check. Its
+    parameter table (mostly obsolete after §5.1), the "read-only tools only" claim about
+    `batch_tool_call` (wrong since §4.1), and the pagination advice (`truncated` now, not "page
+    until you get a short page") were updated with it.
+  - Both field logs (project A, project B) — fixed entries marked in their headings and summarised
+    under `## Resolved`, since the skill tells agents to read those logs first and they still said
+    "Open / blocking". The two things the project B log asserted that turned out to be wrong are
+    recorded there too.
 
 Per the repo's definition of done, each change needs integration tests covering the happy path *and*
 the error path, `make tools-docs` regenerated, and `gradle buildExtension` run before `pytest` — the
