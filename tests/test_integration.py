@@ -1,7 +1,7 @@
 """
 test_integration.py — integration tests for ghidra-mcp-ng HTTP API.
 
-Covers all 33 registered tools.  Requires a running Ghidra server started by
+Covers all 43 registered tools.  Requires a running Ghidra server started by
 the ``ghidra_server`` session fixture in conftest.py (self-contained: compiles
 a C binary, creates a Ghidra project, starts the server on port 8199).
 
@@ -21,10 +21,11 @@ ReadTools (25):
     get_xrefs_to, get_xrefs_from, get_function_callees, search_constant_references,
     batch_tool_call
 
-WriteTools (10):
-  rename_function, rename_variable, set_function_prototype,
-  set_parameter_type, create_struct, add_struct_field,
-  remove_struct_field, replace_struct_field, set_comment, import_binary
+WriteTools (13):
+  rename_function, rename_variable, rename_global, create_label,
+  set_function_prototype, set_parameter_type, create_struct, add_struct_field,
+  remove_struct_field, replace_struct_field, set_comment,
+  analyze_program, import_binary
 
 ScriptTool (5):
   list_scripts, get_script_description, add_script, run_script, delete_script
@@ -80,7 +81,9 @@ class TestHealth:
         h = ghidra_server.health()
         assert h["status"] == "ok"
         assert isinstance(h.get("tools"), int)
-        assert h["tools"] >= 33
+        # The count is reflection-derived server-side; check it against the served schema
+        # rather than a literal, so adding a tool cannot leave this quietly wrong.
+        assert h["tools"] == len(ghidra_server.tools())
 
     def test_tools_list_contains_expected_tools(self, ghidra_server: GhidraClient):
         tools = ghidra_server.tools()
@@ -96,11 +99,11 @@ class TestHealth:
             "search_data_types", "search_defined_strings", "get_struct_layout",
             "get_xrefs_to", "get_xrefs_from", "get_function_callees",
             "search_constant_references", "batch_tool_call",
-            # WriteTools (10)
-            "rename_function", "rename_variable",
+            # WriteTools (13)
+            "rename_function", "rename_variable", "rename_global", "create_label",
             "set_function_prototype", "set_parameter_type",
             "create_struct", "add_struct_field", "remove_struct_field", "replace_struct_field",
-            "set_comment", "import_binary",
+            "set_comment", "analyze_program", "import_binary",
             # ScriptTool (5)
             "list_scripts", "get_script_description", "add_script", "run_script", "delete_script",
         }
@@ -297,9 +300,9 @@ class TestStrings:
         assert pages > 1, "fixture has too few strings to exercise paging"
         assert len(seen) == len(set(seen)), "pages overlapped"
 
-    def test_search_defined_strings_rejects_old_filter_param(
+    def test_search_defined_strings_rejects_an_undeclared_param(
             self, ghidra_server: GhidraClient, prog: str):
-        # 'filter' was the old spelling; it is now 'query' everywhere. The rename must
+        # The substring filter is 'query', as on every search tool. Any other spelling must
         # surface as a rejection, never as a silently ignored argument.
         resp = ghidra_server.call(
             "search_defined_strings",
@@ -434,10 +437,9 @@ class TestDecompilation:
         assert result["truncated"] is True
         assert result["next_address"] is not None
 
-    def test_get_disassembly_rejects_old_instructions_param(
+    def test_get_disassembly_rejects_an_undeclared_param(
             self, ghidra_server: GhidraClient, prog: str):
-        # 'instructions' was the old spelling of the window size; every list tool now
-        # spells it 'limit'.
+        # The window size is 'limit', as on every list tool.
         addr = _func_address(ghidra_server, prog, "add")
         resp = ghidra_server.call(
             "get_disassembly",
@@ -639,8 +641,8 @@ class TestPaginationTruncation:
 
     def test_exact_page_is_not_truncated(
             self, ghidra_server: GhidraClient, prog: str, tool, max_limit, args):
-        # The case the old 'count >= limit' form got wrong: a page that fills
-        # exactly is a complete result and must not ask the agent to page again.
+        # A page that fills exactly is a complete result: it must not ask the agent to
+        # page again for a second copy of what it already has.
         total = self._total(ghidra_server, prog, tool, max_limit, args)
         exact = ghidra_server.ok(tool, {"program": prog, "limit": total, **args})
         assert exact["count"] == total
@@ -811,10 +813,10 @@ class TestWriteOperations:
         assert blank_name["ok"] is False
         assert "parameters[0].name" in blank_name.get("error", "")
 
-    def test_set_function_prototype_names_the_old_type_key(
+    def test_set_function_prototype_rejects_an_undeclared_parameter_key(
             self, ghidra_server: GhidraClient, prog: str):
-        # 'type' was this field's old spelling. Rejecting it is right, but the error must
-        # name the replacement rather than just report a missing field.
+        # A key inside parameters[] is checked like any other input: rejecting it is right,
+        # but the error must name the field that was meant, not just report one missing.
         resp = ghidra_server.call(
             "set_function_prototype",
             {"program": prog,
@@ -1172,7 +1174,7 @@ class TestStructs:
         assert "not found" in error.lower()
         assert "Did you mean" in error
         assert "uint" in error
-        # The old behaviour dumped the whole catalogue — guard against regressing to that.
+        # A suggestion, not a catalogue: the message must stay short enough to read.
         assert len(error) < 400
 
 
@@ -1240,8 +1242,9 @@ class TestScript:
 
     def test_run_script_picks_up_an_edited_source(
             self, ghidra_server: GhidraClient, prog: str, tmp_path: Path):
-        # The failure this guards: add_script copies, so an edited script used to run its
-        # stale snapshot and still report success — indistinguishable from a correct run.
+        # The failure this guards: add_script copies, so without reconciling the source an
+        # edited script runs its stale snapshot and still reports success — a response
+        # indistinguishable from a correct run.
         first, script_name = self._managed_script(tmp_path, "MCP_EDIT_BEFORE")
         added = ghidra_server.ok("add_script", {"file_path": str(first)})
         filename = added["filename"]
@@ -1393,10 +1396,10 @@ class TestScript:
 
 class TestErrorReporting:
     """
-    Failures must arrive as the failure they are. A tool name that does not exist used to
-    come back as a 500 reading "Internal error: HTTP 404 Not Found", and a genuine server
-    bug came back with only getMessage() — the stack trace went to a terminal the caller
-    could not read, so it could not be reported.
+    Failures must arrive as the failure they are: a tool name that does not exist is a 404
+    naming the closest real tool, not an internal error. A genuine server fault returns
+    getMessage() plus an error_id, and the full stack trace goes to a log file the caller can
+    find — a trace that reaches only the launching terminal cannot be put in a bug report.
     """
 
     def test_unknown_tool_is_404_and_suggests_the_real_name(self, ghidra_server: GhidraClient):
@@ -1408,7 +1411,7 @@ class TestErrorReporting:
         assert "Internal error" not in body["error"]
 
     def test_unknown_path_names_the_real_surface(self, ghidra_server: GhidraClient):
-        # The README used to document GET /tools; it has never existed.
+        # /tools is a plausible guess at a dispatcher endpoint; this server has none.
         status, body = ghidra_server.raw("/tools")
         assert status == 404
         assert body["ok"] is False
@@ -1589,8 +1592,8 @@ class TestUnknownFieldRejection:
 
 class TestRefTypeVocabulary:
     """
-    An unrecognised ref_types value used to filter every reference out, so the tool answered
-    "no cross-references" — a statement about the program, from a typo in the request.
+    An unrecognised ref_types value can match nothing, so accepting one would make the tool
+    answer "no cross-references" — a statement about the program, from a typo in the request.
     """
 
     def test_unknown_ref_type_is_rejected_not_silently_empty(

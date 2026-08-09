@@ -17,11 +17,10 @@ import java.util.UUID;
  *
  * <p>The API returns only {@code getMessage()} to the caller, which is the right amount of
  * detail for an agent trying to correct its own call but useless for diagnosing a genuine
- * server bug. The stack trace previously went only to the server's stderr, which in practice
- * belongs to whatever terminal launched it — a bug report could not include it without
- * restarting shared infrastructure on a guess. With this, an error response carries an
- * {@code error_id} and the operator (or the agent, via {@code /health}'s {@code log_file})
- * can pull the matching entry out of the log.
+ * server bug. The full trace goes here instead of to stderr, which belongs to whatever terminal
+ * launched the server and is therefore unreachable to anyone filing the report. An error
+ * response carries an {@code error_id} and the operator (or the agent, via {@code /health}'s
+ * {@code log_file}) pulls the matching entry out of the log.
  *
  * <p>Writes are best-effort: if the log cannot be written the id is still allocated and the
  * entry falls back to stderr, so the response is never blocked by a logging failure.

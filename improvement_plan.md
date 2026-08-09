@@ -879,3 +879,46 @@ Covered by 17 cases across `TestArgumentTypeStrictness`, `TestUnknownFieldReject
 and the 4 that pass are the intended controls — a declared optional field is still accepted, the
 valid `ref_types` spellings still work, and `"0x10 00"` was already rejected because an interior
 space survives `trim()`.
+
+---
+
+## 8. Historical references in comments and docs — **DONE 2026-08-09**
+
+Raised alongside §7: the code and docs had accumulated narration of what the behaviour *used to*
+be and how the current version differs. Backward compatibility is not a goal here (principle 3),
+so a description of the previous behaviour is not context — it is a second, wrong contract sitting
+next to the right one, and the reader cannot always tell which is live.
+
+The rule applied: **a comment may describe the failure it prevents; it may not narrate what the
+code previously did.** "A misspelled field would otherwise take its default" earns its place; "this
+used to take its default" does not. Ordinary English ("a helper *used to* derive the count") is not
+what this is about.
+
+In-repo: `ServerLog`'s class doc, three comments in `ToolResourceIntegrationTest`, and nine in
+`tests/test_integration.py` — including four test *names* built around a removed parameter spelling
+(`test_search_defined_strings_rejects_old_filter_param` and friends). Those tests still earn their
+place, because rejecting an undeclared parameter is worth asserting; they now say so without the
+archaeology.
+
+`improvement_plan.md` itself is deliberately untouched. It is the changelog — a record of what was
+wrong and what changed is its entire content, and it is the one place the history should live.
+
+Two stale-fact bugs fell out of the sweep, both of which had made a document contradict itself:
+
+- **The `reversing` skill described the pre-fix HTTP surface** ("`README.md` documents `GET /tools`
+  … a 404 comes back as `Internal error: HTTP 404 Not Found`") twenty lines above a later section
+  stating the fixed behaviour. Its whole "Known-broken and how to work around it" section had become
+  a changelog — "what follows is what changed, since the old workarounds are now the wrong move" —
+  which is the shape that keeps dead workarounds alive. It is now "Program lifecycle and failure
+  handling", written entirely in the present, and carries §7's strictness rules.
+- **`tests/test_integration.py` claimed 33 tools and listed 10 write tools**; there are 43 and 13.
+  `rename_global`, `create_label` and `analyze_program` were missing from the coverage list. The
+  health check asserted `tools >= 33`, which is why the drift was never caught — it now asserts the
+  reported count equals the served schema's, so adding a tool cannot leave it quietly wrong.
+
+Both field logs listed fixed issues under "Open". The project B log's own instructions said to mark
+an issue resolved *rather than delete it*, which is precisely what produced the drift, so the
+instruction changed with the content: a fixed entry is now deleted, because the `reversing` skill
+sends agents to these logs first and a workaround kept past its bug still reads as instruction.
+Eleven entries left the project A log (four remain: all Ghidra facts, none likely to become fixes) and
+three left project B's, leaving it with none open. Nothing was lost — every one has a section here.

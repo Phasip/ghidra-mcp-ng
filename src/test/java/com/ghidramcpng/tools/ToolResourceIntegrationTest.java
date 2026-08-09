@@ -449,9 +449,9 @@ class ToolResourceIntegrationTest {
     }
 
     // -----------------------------------------------------------------------------------
-    // Label and global naming rules (improvement_plan §5.2) — create_label and rename_global
-    // used to validate against function_name, which forced the maybe_/likely_ prefixes onto
-    // recovered names (a CMSIS register, a map-file symbol) that are facts, not inferences.
+    // Label and global naming rules — create_label and rename_global carry their own rule keys,
+    // because a label is often a *recovered* name (a CMSIS register, a map-file symbol) and a
+    // recovered name is a fact, not an inference the maybe_/likely_ prefixes should mark.
     // -----------------------------------------------------------------------------------
 
     /** A rules file whose function_name rule would reject anything without a maybe_ prefix. */
@@ -468,7 +468,7 @@ class ToolResourceIntegrationTest {
                 "address", "0x" + target,
                 "name", "UART0_CTRL")));
 
-        // ...while the function rule it no longer shares is still in force.
+        // ...while the function rule, which is a separate key, is still in force.
         assertThrows(com.ghidramcpng.rules.NamingRuleViolation.class,
                 () -> restricted.renameFunction(json(
                         "program", programName, "name_or_address", FN_MULTIPLY, "new_name", "plain_name")));
@@ -1523,9 +1523,10 @@ class ToolResourceIntegrationTest {
     }
 
     /**
-     * Opening a program used to trigger auto-analysis, so a read could block for minutes or —
-     * when analysis failed — wedge the program for every later request. Report it instead.
-     * analyze_program itself must still be able to open the program, or there is no way out.
+     * Opening a program never analyses it: a read must not block for minutes, and an analysis
+     * failure inside a read wedges the program for every later request. An unanalyzed program is
+     * reported instead. analyze_program itself must still be able to open one, or there is no
+     * way out of that report.
      */
     @Test
     void getOrOpen_unanalyzedProgram_reportsItAndAnalyzeProgramStillWorks() throws Exception {
