@@ -101,7 +101,7 @@ List cross-references originating from an address with optional destination-rang
 |-----------|------|:--------:|---------|-------------|
 | `program` | string | yes |  | Name of the open program to analyze. Use list_project_files to see available programs. |
 | `address` | string | yes |  | Hex address with 0x prefix, e.g. 0x00401000. Use search_functions to find entry points. |
-| `ref_types` | array of string |  |  | Optional reference type filter(s), e.g. CALL, COMPUTED_CALL, DATA, READ, WRITE. Can be repeated or comma-separated. |
+| `ref_types` | array of string |  |  | Optional reference type filter(s). Either a category — CALL, COMPUTED_CALL, DATA, READ, WRITE, OTHER — or an exact Ghidra reference type name such as UNCONDITIONAL_CALL. Can be repeated or comma-separated; an unrecognised name is rejected. |
 | `start_address` | string |  |  | Optional lower bound (inclusive) for destination addresses. |
 | `end_address` | string |  |  | Optional upper bound (inclusive) for destination addresses. |
 | `limit` | integer (int32) |  | 500 | Maximum number of cross-references to return (max 5000). 'count' is the size of this page; 'truncated' is true when further matches were dropped. |
@@ -114,7 +114,7 @@ List cross-references to an address or symbol, with optional ref-type and source
 |-----------|------|:--------:|---------|-------------|
 | `program` | string | yes |  | Name of the open program to analyze. Use list_project_files to see available programs. |
 | `name_or_address` | string | yes |  | Target: a function/symbol name (case-sensitive) — function, global, label, etc. — or a 0x-prefixed hex address (e.g. 0x00401000). |
-| `ref_types` | array of string |  |  | Optional reference type filter(s), e.g. CALL, COMPUTED_CALL, DATA, READ, WRITE. Can be repeated or comma-separated. |
+| `ref_types` | array of string |  |  | Optional reference type filter(s). Either a category — CALL, COMPUTED_CALL, DATA, READ, WRITE, OTHER — or an exact Ghidra reference type name such as UNCONDITIONAL_CALL. Can be repeated or comma-separated; an unrecognised name is rejected. |
 | `start_address` | string |  |  | Optional lower bound (inclusive) for xref source addresses. |
 | `end_address` | string |  |  | Optional upper bound (inclusive) for xref source addresses. |
 | `limit` | integer (int32) |  | 500 | Maximum number of cross-references to return (max 5000). 'count' is the size of this page; 'truncated' is true when further matches were dropped. Narrow with ref_types or start_address/end_address rather than raising this. |

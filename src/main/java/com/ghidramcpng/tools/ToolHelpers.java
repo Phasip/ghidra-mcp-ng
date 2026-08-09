@@ -1,7 +1,9 @@
 package com.ghidramcpng.tools;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileOptions;
 import ghidra.app.decompiler.DecompileResults;
@@ -21,7 +23,9 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -63,6 +67,67 @@ public final class ToolHelpers {
         return names;
     }
 
+    /**
+     * The argument names an endpoint accepts: the {@code @QueryParam} names of a GET, or the
+     * components of the record its {@code @RequestBody} names for a POST. Derived by reflection
+     * for the same reason as {@link #listEndpoints} — a parameter added to a tool cannot be
+     * forgotten here, so the accepted set and the published schema are the same thing.
+     *
+     * @return null when a POST declares no request-body schema, meaning there is no vocabulary
+     *         to check an argument against
+     */
+    public static Set<String> argumentNames(Method method) {
+        Set<String> names = new LinkedHashSet<>();
+        boolean isPost = method.isAnnotationPresent(POST.class);
+        for (java.lang.reflect.Parameter p : method.getParameters()) {
+            jakarta.ws.rs.QueryParam queryParam = p.getAnnotation(jakarta.ws.rs.QueryParam.class);
+            if (queryParam != null) {
+                names.add(queryParam.value());
+                continue;
+            }
+            if (!isPost) {
+                continue;
+            }
+            Class<?> schema = requestBodySchema(p);
+            if (schema != null && schema.isRecord()) {
+                for (java.lang.reflect.RecordComponent c : schema.getRecordComponents()) {
+                    names.add(c.getName());
+                }
+            }
+        }
+        return isPost && names.isEmpty() ? null : names;
+    }
+
+    /** The record class a parameter's {@code @RequestBody} names as its schema, or null. */
+    private static Class<?> requestBodySchema(java.lang.reflect.Parameter parameter) {
+        var body = parameter.getAnnotation(io.swagger.v3.oas.annotations.parameters.RequestBody.class);
+        if (body == null || body.content().length == 0) {
+            return null;
+        }
+        Class<?> implementation = body.content()[0].schema().implementation();
+        return implementation == Void.class ? null : implementation;
+    }
+
+    /**
+     * Looks up an endpoint method by its operationId (the {@code @Path} segment) across the
+     * tool classes that {@code batch_tool_call} can dispatch to.
+     */
+    public static Method findEndpoint(String operationId, Class<?>... toolClasses) {
+        for (Class<?> toolClass : toolClasses) {
+            for (Method m : toolClass.getDeclaredMethods()) {
+                if (!Modifier.isPublic(m.getModifiers())
+                        || !(m.isAnnotationPresent(GET.class) || m.isAnnotationPresent(POST.class))) {
+                    continue;
+                }
+                jakarta.ws.rs.Path path = m.getAnnotation(jakarta.ws.rs.Path.class);
+                if (path != null && path.value().replaceAll("^/+", "").equals(operationId)) {
+                    return m;
+                }
+            }
+        }
+        return null;
+    }
+
     // Parameter extraction from JSON arguments
 
     public static String required(JsonObject args, String name) {
@@ -89,27 +154,56 @@ public final class ToolHelpers {
 
     public static int optionalInt(JsonObject args, String name, int defaultValue) {
         if (args == null || !args.has(name) || args.get(name).isJsonNull()) return defaultValue;
-        try {
-            return args.get(name).getAsInt();
-        } catch (ClassCastException | UnsupportedOperationException | NumberFormatException e) {
+        JsonElement el = args.get(name);
+        // Gson's getAsInt() is lenient in three ways that all read as a successful call:
+        // it parses the string "5", truncates 5.7 to 5, and unwraps the single-element array [5].
+        // A truncated offset or limit is a wrong answer that looks like a right one.
+        if (!el.isJsonPrimitive() || !el.getAsJsonPrimitive().isNumber()) {
             throw new IllegalArgumentException(
-                    "Parameter '" + name + "' must be an integer.");
+                    "Parameter '" + name + "' must be an integer, got " + describeJson(el) + ".");
+        }
+        try {
+            return el.getAsBigDecimal().intValueExact();
+        } catch (ArithmeticException | NumberFormatException e) {
+            throw new IllegalArgumentException(
+                    "Parameter '" + name + "' must be a whole number in the range " +
+                    Integer.MIN_VALUE + " to " + Integer.MAX_VALUE + ", got " + el + ".");
         }
     }
 
     public static boolean optionalBool(JsonObject args, String name, boolean defaultValue) {
         if (args == null || !args.has(name) || args.get(name).isJsonNull()) return defaultValue;
-        var el = args.get(name);
+        JsonElement el = args.get(name);
         if (!el.isJsonPrimitive() || !el.getAsJsonPrimitive().isBoolean()) {
             throw new IllegalArgumentException(
-                    "Parameter '" + name + "' must be a boolean (true or false).");
+                    "Parameter '" + name + "' must be a boolean (true or false), got " +
+                    describeJson(el) + ".");
         }
         return el.getAsBoolean();
     }
 
     public static JsonArray optionalArray(JsonObject args, String name) {
         if (args == null || !args.has(name) || args.get(name).isJsonNull()) return new JsonArray();
-        return args.get(name).getAsJsonArray();
+        JsonElement el = args.get(name);
+        if (!el.isJsonArray()) {
+            throw new IllegalArgumentException(
+                    "Parameter '" + name + "' must be a JSON array, got " + describeJson(el) + ".");
+        }
+        return el.getAsJsonArray();
+    }
+
+    /**
+     * Names the JSON type of a value for an error message, so a rejection says what was sent
+     * rather than only what was expected.
+     */
+    public static String describeJson(JsonElement el) {
+        if (el == null || el.isJsonNull()) return "null";
+        if (el.isJsonArray()) return "an array";
+        if (el.isJsonObject()) return "an object";
+        JsonPrimitive p = el.getAsJsonPrimitive();
+        if (p.isString()) return "the string " + p;
+        if (p.isBoolean()) return "a boolean";
+        return "the number " + p;
     }
 
     // Ghidra lookups
@@ -134,29 +228,23 @@ public final class ToolHelpers {
 
         // Hex address — 0x prefix is required
         if (nameOrAddress.startsWith("0x") || nameOrAddress.startsWith("0X")) {
-            String stripped = nameOrAddress.substring(2);
-            try {
-                long offset = Long.parseUnsignedLong(stripped, 16);
-                Address addr = program.getAddressFactory().getDefaultAddressSpace().getAddress(offset);
-                Function f = program.getFunctionManager().getFunctionAt(addr);
-                if (f != null) return f;
-                // Diagnose the common mistake of passing a mid-function address: point at the
-                // containing function's actual entry point rather than a generic hint.
-                Function containing = program.getFunctionManager().getFunctionContaining(addr);
-                if (containing != null) {
-                    throw new IllegalArgumentException(
-                            "Address " + nameOrAddress + " is inside function '" + containing.getName() +
-                            "' but is not its entry point. Pass the entry point 0x" +
-                            containing.getEntryPoint() + " to reference this function.");
-                }
+            Address addr = parseHexOffset(program, nameOrAddress,
+                    "Invalid hex address '" + nameOrAddress + "'. " +
+                    "Expected format: 0x followed by hex digits, e.g. 0x00401000");
+            Function f = program.getFunctionManager().getFunctionAt(addr);
+            if (f != null) return f;
+            // Diagnose the common mistake of passing a mid-function address: point at the
+            // containing function's actual entry point rather than a generic hint.
+            Function containing = program.getFunctionManager().getFunctionContaining(addr);
+            if (containing != null) {
                 throw new IllegalArgumentException(
-                        "No function at address " + nameOrAddress + ", and the address is not inside any " +
-                        "defined function. Use search_functions or list_exports to find valid entry points.");
-            } catch (NumberFormatException e) {
-                throw new IllegalArgumentException(
-                        "Invalid hex address '" + nameOrAddress + "'. " +
-                        "Expected format: 0x followed by hex digits, e.g. 0x00401000");
+                        "Address " + nameOrAddress + " is inside function '" + containing.getName() +
+                        "' but is not its entry point. Pass the entry point 0x" +
+                        containing.getEntryPoint() + " to reference this function.");
             }
+            throw new IllegalArgumentException(
+                    "No function at address " + nameOrAddress + ", and the address is not inside any " +
+                    "defined function. Use search_functions or list_exports to find valid entry points.");
         }
 
         // Exact name lookup via symbol table (case-sensitive)
@@ -182,8 +270,8 @@ public final class ToolHelpers {
      * <ul>
      *   <li>If the value starts with {@code 0x} — parsed as a hex address.</li>
      *   <li>Otherwise — the symbol table is searched (case-sensitive) for any symbol with that
-     *       name, accepting all symbol types. If multiple symbols share the name the first
-     *       match is returned. Use a 0x-prefixed address to disambiguate.</li>
+     *       name, accepting all symbol types. A name shared by several symbols is rejected,
+     *       listing each address so the caller can pick one.</li>
      * </ul>
      *
      * @throws IllegalArgumentException with guidance if nothing matches.
@@ -237,14 +325,28 @@ public final class ToolHelpers {
                     "Address '" + addressStr + "' is missing the 0x prefix. " +
                     "Expected format: 0x followed by hex digits, e.g. 0x00401000");
         }
-        String stripped = addressStr.substring(2);
+        return parseHexOffset(program, addressStr, "Invalid hex address '" + addressStr + "'. " +
+                "Expected format: 0x followed by hex digits, e.g. 0x00401000");
+    }
+
+    /**
+     * Parses the hex digits after an already-checked {@code 0x} prefix.
+     *
+     * <p>The digits are taken exactly as sent. {@code Long.parseUnsignedLong} accepts a leading
+     * {@code +} and would ignore surrounding whitespace if it were stripped first, so
+     * {@code "0x +1000"} would resolve to 0x1000 — a coerced address, which is the one thing an
+     * address parser must never do.
+     */
+    private static Address parseHexOffset(Program program, String addressStr, String errorMessage) {
+        String digits = addressStr.substring(2);
+        if (!digits.matches("[0-9a-fA-F]+")) {
+            throw new IllegalArgumentException(errorMessage);
+        }
         try {
-            long offset = Long.parseUnsignedLong(stripped.trim(), 16);
+            long offset = Long.parseUnsignedLong(digits, 16);
             return program.getAddressFactory().getDefaultAddressSpace().getAddress(offset);
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException(
-                    "Invalid hex address '" + addressStr + "'. " +
-                    "Expected format: 0x followed by hex digits, e.g. 0x00401000");
+            throw new IllegalArgumentException(errorMessage);
         }
     }
 
@@ -336,7 +438,15 @@ public final class ToolHelpers {
         // BuiltInDataTypeManager and are not always present in the program's manager.
         List<DataType> builtInMatches = new ArrayList<>();
         BuiltInDataTypeManager.getDataTypeManager().findDataTypes(trimmed, builtInMatches);
-        if (!builtInMatches.isEmpty()) {
+        if (builtInMatches.size() > 1) {
+            // Same rule as for the program's own types: which one was meant is the caller's to say.
+            throw new IllegalArgumentException(
+                    "Ambiguous built-in data type '" + typeName + "': " + builtInMatches.size() +
+                    " types with this name exist. Use the full category path to disambiguate. Candidates: " +
+                    builtInMatches.stream().map(match -> match.getDataTypePath().getPath())
+                            .collect(Collectors.joining(", ")));
+        }
+        if (builtInMatches.size() == 1) {
             return builtInMatches.get(0);
         }
 

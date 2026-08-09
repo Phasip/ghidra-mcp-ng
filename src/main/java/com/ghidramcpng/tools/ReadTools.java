@@ -30,6 +30,7 @@ import ghidra.program.model.scalar.Scalar;
 import ghidra.program.model.symbol.ExternalLocation;
 import ghidra.program.model.symbol.Namespace;
 import ghidra.program.model.symbol.Reference;
+import ghidra.program.model.symbol.RefType;
 import ghidra.program.model.symbol.Symbol;
 import ghidra.program.model.symbol.SymbolType;
 import ghidra.util.task.TaskMonitor;
@@ -37,6 +38,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.parameters.RequestBody;
+import com.ghidramcpng.mcp.ApiSupport;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.Parameter;
 import jakarta.ws.rs.Consumes;
@@ -48,6 +50,7 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 
+import java.lang.reflect.Method;
 import java.util.Iterator;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -62,6 +65,9 @@ import static com.ghidramcpng.tools.ToolHelpers.decompileFresh;
 import static com.ghidramcpng.tools.ToolHelpers.findDataType;
 import static com.ghidramcpng.tools.ToolHelpers.findFunction;
 import static com.ghidramcpng.tools.ToolHelpers.findSymbolAddress;
+import static com.ghidramcpng.tools.ToolHelpers.optional;
+import static com.ghidramcpng.tools.ToolHelpers.optionalInt;
+import static com.ghidramcpng.tools.ToolHelpers.required;
 import static com.ghidramcpng.tools.ToolHelpers.toAddress;
 
 /**
@@ -233,7 +239,7 @@ public class ReadTools {
                     description = "Batch tool call request",
                     content = @Content(schema = @Schema(implementation = BatchToolCallRequest.class)))
             JsonObject request) {
-        String tool = requireBodyText(request, "tool");
+        String tool = required(request, "tool");
         List<JsonObject> calls = requireBodyObjectList(request, "calls");
         if (calls.isEmpty()) {
             throw new IllegalArgumentException("Parameter 'calls' must contain at least one argument set.");
@@ -269,6 +275,32 @@ public class ReadTools {
             }
         }
         return new BatchToolCallResponse(tool, results, results.size(), failed);
+    }
+
+    /**
+     * Applies the same unknown-argument rejection a standalone call gets. A batch item never
+     * passes through the HTTP filters — its arguments arrive as a nested object — so without this
+     * a misspelled key would be silently dropped here while being refused on the direct route.
+     */
+    private static void rejectUnknownBatchArguments(String tool, JsonObject args) {
+        Method endpoint = ToolHelpers.findEndpoint(tool, ReadTools.class, WriteTools.class);
+        if (endpoint == null) {
+            return;
+        }
+        Set<String> allowed = ToolHelpers.argumentNames(endpoint);
+        if (allowed == null) {
+            return;
+        }
+        List<String> unknown = new ArrayList<>();
+        for (String provided : args.keySet()) {
+            if (!allowed.contains(provided)) {
+                unknown.add(provided);
+            }
+        }
+        if (!unknown.isEmpty()) {
+            throw new IllegalArgumentException(
+                    ApiSupport.unknownNamesMessage("field", unknown, allowed, "tool '" + tool + "'"));
+        }
     }
 
     /** Tools deliberately excluded from batching, each with the reason the agent needs. */
@@ -919,7 +951,7 @@ public class ReadTools {
             @QueryParam("program") String programName,
             @Parameter(description = "Target: a function/symbol name (case-sensitive) — function, global, label, etc. — or a 0x-prefixed hex address (e.g. 0x00401000).", required = true)
             @QueryParam("name_or_address") String nameOrAddress,
-            @Parameter(description = "Optional reference type filter(s), e.g. CALL, COMPUTED_CALL, DATA, READ, WRITE. Can be repeated or comma-separated.")
+            @Parameter(description = "Optional reference type filter(s). Either a category — CALL, COMPUTED_CALL, DATA, READ, WRITE, OTHER — or an exact Ghidra reference type name such as UNCONDITIONAL_CALL. Can be repeated or comma-separated; an unrecognised name is rejected.")
             @QueryParam("ref_types") List<String> refTypes,
             @Parameter(description = "Optional lower bound (inclusive) for xref source addresses.")
             @QueryParam("start_address") String startAddress,
@@ -972,7 +1004,7 @@ public class ReadTools {
             @QueryParam("program") String programName,
             @Parameter(description = "Hex address with 0x prefix, e.g. 0x00401000. Use search_functions to find entry points.", required = true)
             @QueryParam("address") String addressText,
-            @Parameter(description = "Optional reference type filter(s), e.g. CALL, COMPUTED_CALL, DATA, READ, WRITE. Can be repeated or comma-separated.")
+            @Parameter(description = "Optional reference type filter(s). Either a category — CALL, COMPUTED_CALL, DATA, READ, WRITE, OTHER — or an exact Ghidra reference type name such as UNCONDITIONAL_CALL. Can be repeated or comma-separated; an unrecognised name is rejected.")
             @QueryParam("ref_types") List<String> refTypes,
             @Parameter(description = "Optional lower bound (inclusive) for destination addresses.")
             @QueryParam("start_address") String startAddress,
@@ -1239,6 +1271,39 @@ public class ReadTools {
         }
     }
 
+    /** The coarse groupings {@link #classifyReferenceType} folds Ghidra's reference types into. */
+    private static final Set<String> REF_TYPE_CATEGORIES =
+            new LinkedHashSet<>(List.of("CALL", "COMPUTED_CALL", "DATA", "READ", "WRITE", "OTHER"));
+
+    /**
+     * Every name {@link #matchesRequestedRefType} can match: the categories above plus the exact
+     * names Ghidra publishes. Read off {@link RefType}'s own constants so it cannot fall behind
+     * the Ghidra version in use.
+     */
+    private static final Set<String> KNOWN_REF_TYPES = knownRefTypes();
+
+    private static Set<String> knownRefTypes() {
+        Set<String> names = new LinkedHashSet<>(REF_TYPE_CATEGORIES);
+        for (java.lang.reflect.Field field : RefType.class.getFields()) {
+            if (!java.lang.reflect.Modifier.isStatic(field.getModifiers())
+                    || !RefType.class.isAssignableFrom(field.getType())) {
+                continue;
+            }
+            try {
+                names.add(((RefType) field.get(null)).getName().toUpperCase(Locale.ROOT));
+            } catch (IllegalAccessException e) {
+                // A non-readable constant simply is not offered; the filter still works.
+            }
+        }
+        return names;
+    }
+
+    /**
+     * Parses the {@code ref_types} filter, rejecting any name that could never match. An
+     * unrecognised type is the worst kind of bad argument here: it filters every reference out
+     * and the tool answers "no cross-references", which reads as a fact about the program rather
+     * than a typo.
+     */
     private static Set<String> normalizeRefTypeFilter(List<String> raw) {
         if (raw == null || raw.isEmpty()) {
             return Set.of();
@@ -1250,9 +1315,18 @@ public class ReadTools {
             }
             for (String token : value.split(",")) {
                 String trimmed = token.trim().toUpperCase(Locale.ROOT);
-                if (!trimmed.isEmpty()) {
-                    normalized.add(trimmed);
+                if (trimmed.isEmpty()) {
+                    continue;
                 }
+                if (!KNOWN_REF_TYPES.contains(trimmed)) {
+                    String suggestion = ApiSupport.suggestClosest(trimmed, KNOWN_REF_TYPES);
+                    throw new IllegalArgumentException(
+                            "Unknown reference type '" + token.trim() + "' in 'ref_types'. " +
+                            (suggestion != null ? "Did you mean '" + suggestion + "'? " : "") +
+                            "Use one of the categories " + String.join(", ", REF_TYPE_CATEGORIES) +
+                            ", or an exact Ghidra reference type name such as UNCONDITIONAL_CALL.");
+                }
+                normalized.add(trimmed);
             }
         }
         return normalized;
@@ -1384,22 +1458,6 @@ public class ReadTools {
         }
     }
 
-    private static String requireBodyText(JsonObject body, String fieldName) {
-        if (body == null || !body.has(fieldName) || body.get(fieldName).isJsonNull()) {
-            throw new IllegalArgumentException("Required parameter '" + fieldName + "' is missing");
-        }
-        if (!body.get(fieldName).isJsonPrimitive() || !body.get(fieldName).getAsJsonPrimitive().isString()) {
-            throw new IllegalArgumentException(
-                    "Parameter '" + fieldName + "' must be a string.");
-        }
-        String value = body.get(fieldName).getAsString();
-        if (value.isBlank()) {
-            throw new IllegalArgumentException(
-                    "Parameter '" + fieldName + "' must not be blank.");
-        }
-        return value;
-    }
-
     private static List<String> requireBodyStringList(JsonObject body, String fieldName) {
         if (body == null || !body.has(fieldName) || body.get(fieldName).isJsonNull()) {
             throw new IllegalArgumentException("Required parameter '" + fieldName + "' is missing");
@@ -1449,105 +1507,102 @@ public class ReadTools {
         if (args == null) {
             throw new IllegalArgumentException("Batch call arguments must be a JSON object.");
         }
+        rejectUnknownBatchArguments(tool, args);
         return switch (tool) {
             case "search_functions" -> searchFunctions(
-                requireBodyText(args, "program"),
-                args.has("query") && !args.get("query").isJsonNull() ? args.get("query").getAsString() : "",
-                args.has("limit") && !args.get("limit").isJsonNull() ? args.get("limit").getAsInt() : 100,
-                args.has("start_address") && !args.get("start_address").isJsonNull() ? args.get("start_address").getAsString() : null,
-                args.has("end_address") && !args.get("end_address").isJsonNull() ? args.get("end_address").getAsString() : null);
+                required(args, "program"),
+                optional(args, "query", ""),
+                optionalInt(args, "limit", 100),
+                optional(args, "start_address", null),
+                optional(args, "end_address", null));
             case "get_function_info" -> getFunctionInfo(
-                requireBodyText(args, "program"),
-                requireBodyText(args, "name_or_address"));
+                required(args, "program"),
+                required(args, "name_or_address"));
             case "decompile_function" -> decompileFunction(
-                requireBodyText(args, "program"),
-                requireBodyText(args, "name_or_address"),
-                args.has("timeout_seconds") && !args.get("timeout_seconds").isJsonNull()
-                    ? args.get("timeout_seconds").getAsInt() : 0);
+                required(args, "program"),
+                required(args, "name_or_address"),
+                optionalInt(args, "timeout_seconds", 0));
             case "get_address_info" -> getAddressInfo(
-                requireBodyText(args, "program"),
-                requireBodyText(args, "address"));
+                required(args, "program"),
+                required(args, "address"));
             case "get_disassembly" -> getDisassembly(
-                requireBodyText(args, "program"),
-                requireBodyText(args, "address"),
-                args.has("limit") && !args.get("limit").isJsonNull()
-                    ? args.get("limit").getAsInt() : 20);
+                required(args, "program"),
+                required(args, "address"),
+                optionalInt(args, "limit", 20));
             case "read_data" -> readData(
-                requireBodyText(args, "program"),
-                requireBodyText(args, "address"),
-                args.has("item_size") && !args.get("item_size").isJsonNull()
-                    ? args.get("item_size").getAsInt() : 1,
-                args.has("item_count") && !args.get("item_count").isJsonNull()
-                    ? args.get("item_count").getAsInt() : 16);
+                required(args, "program"),
+                required(args, "address"),
+                optionalInt(args, "item_size", 1),
+                optionalInt(args, "item_count", 16));
             case "search_bytes" -> searchBytes(
-                requireBodyText(args, "program"),
-                requireBodyText(args, "hex_pattern"),
-                args.has("start_address") && !args.get("start_address").isJsonNull() ? args.get("start_address").getAsString() : null,
-                args.has("end_address") && !args.get("end_address").isJsonNull() ? args.get("end_address").getAsString() : null,
-                args.has("limit") && !args.get("limit").isJsonNull() ? args.get("limit").getAsInt() : 100);
+                required(args, "program"),
+                required(args, "hex_pattern"),
+                optional(args, "start_address", null),
+                optional(args, "end_address", null),
+                optionalInt(args, "limit", 100));
             case "search_instructions" -> searchInstructions(
-                requireBodyText(args, "program"),
-                requireBodyText(args, "pattern"),
-                args.has("start_address") && !args.get("start_address").isJsonNull() ? args.get("start_address").getAsString() : null,
-                args.has("end_address") && !args.get("end_address").isJsonNull() ? args.get("end_address").getAsString() : null,
-                args.has("limit") && !args.get("limit").isJsonNull() ? args.get("limit").getAsInt() : 100);
+                required(args, "program"),
+                required(args, "pattern"),
+                optional(args, "start_address", null),
+                optional(args, "end_address", null),
+                optionalInt(args, "limit", 100));
             case "get_xrefs_to" -> {
             List<String> refTypes = args.has("ref_types") && !args.get("ref_types").isJsonNull()
                 ? requireBodyStringList(args, "ref_types") : List.of();
                 yield getXrefsTo(
-                requireBodyText(args, "program"),
-                requireBodyText(args, "name_or_address"),
+                required(args, "program"),
+                required(args, "name_or_address"),
                 refTypes,
-                args.has("start_address") && !args.get("start_address").isJsonNull() ? args.get("start_address").getAsString() : null,
-                args.has("end_address") && !args.get("end_address").isJsonNull() ? args.get("end_address").getAsString() : null,
-                args.has("limit") && !args.get("limit").isJsonNull() ? args.get("limit").getAsInt() : DEFAULT_XREF_LIMIT);
+                optional(args, "start_address", null),
+                optional(args, "end_address", null),
+                optionalInt(args, "limit", DEFAULT_XREF_LIMIT));
             }
             case "get_xrefs_from" -> {
             List<String> refTypes = args.has("ref_types") && !args.get("ref_types").isJsonNull()
                 ? requireBodyStringList(args, "ref_types") : List.of();
                 yield getXrefsFrom(
-                requireBodyText(args, "program"),
-                requireBodyText(args, "address"),
+                required(args, "program"),
+                required(args, "address"),
                 refTypes,
-                args.has("start_address") && !args.get("start_address").isJsonNull() ? args.get("start_address").getAsString() : null,
-                args.has("end_address") && !args.get("end_address").isJsonNull() ? args.get("end_address").getAsString() : null,
-                args.has("limit") && !args.get("limit").isJsonNull() ? args.get("limit").getAsInt() : DEFAULT_XREF_LIMIT);
+                optional(args, "start_address", null),
+                optional(args, "end_address", null),
+                optionalInt(args, "limit", DEFAULT_XREF_LIMIT));
             }
-            case "get_program_info" -> getProgramInfo(requireBodyText(args, "program"));
+            case "get_program_info" -> getProgramInfo(required(args, "program"));
             case "list_globals" -> listGlobals(
-                requireBodyText(args, "program"),
-                args.has("section") && !args.get("section").isJsonNull() ? args.get("section").getAsString() : null,
-                args.has("start_address") && !args.get("start_address").isJsonNull() ? args.get("start_address").getAsString() : null,
-                args.has("end_address") && !args.get("end_address").isJsonNull() ? args.get("end_address").getAsString() : null,
-                args.has("limit") && !args.get("limit").isJsonNull() ? args.get("limit").getAsInt() : 500);
+                required(args, "program"),
+                optional(args, "section", null),
+                optional(args, "start_address", null),
+                optional(args, "end_address", null),
+                optionalInt(args, "limit", 500));
             case "check_connection" -> checkConnection();
             case "list_project_files" -> listProjectFiles();
-            case "list_exports" -> listExports(requireBodyText(args, "program"));
-            case "list_imports" -> listImports(requireBodyText(args, "program"));
-            case "list_data_type_categories" -> listDataTypeCategories(requireBodyText(args, "program"));
-            case "get_calling_conventions" -> getCallingConventions(requireBodyText(args, "program"));
+            case "list_exports" -> listExports(required(args, "program"));
+            case "list_imports" -> listImports(required(args, "program"));
+            case "list_data_type_categories" -> listDataTypeCategories(required(args, "program"));
+            case "get_calling_conventions" -> getCallingConventions(required(args, "program"));
             case "get_function_callees" -> getFunctionCallees(
-                requireBodyText(args, "program"),
-                requireBodyText(args, "name_or_address"));
+                required(args, "program"),
+                required(args, "name_or_address"));
             case "get_function_variables" -> getFunctionVariables(
-                requireBodyText(args, "program"),
-                requireBodyText(args, "name_or_address"));
+                required(args, "program"),
+                required(args, "name_or_address"));
             case "get_struct_layout" -> getStructLayout(
-                requireBodyText(args, "program"),
-                requireBodyText(args, "name"));
+                required(args, "program"),
+                required(args, "name"));
             case "search_data_types" -> searchDataTypes(
-                requireBodyText(args, "program"),
-                args.has("query") && !args.get("query").isJsonNull() ? args.get("query").getAsString() : "",
-                args.has("limit") && !args.get("limit").isJsonNull() ? args.get("limit").getAsInt() : 50);
+                required(args, "program"),
+                optional(args, "query", ""),
+                optionalInt(args, "limit", 50));
             case "search_defined_strings" -> searchDefinedStrings(
-                requireBodyText(args, "program"),
-                args.has("query") && !args.get("query").isJsonNull() ? args.get("query").getAsString() : null,
-                args.has("offset") && !args.get("offset").isJsonNull() ? args.get("offset").getAsInt() : 0,
-                args.has("limit") && !args.get("limit").isJsonNull() ? args.get("limit").getAsInt() : 200);
+                required(args, "program"),
+                optional(args, "query", null),
+                optionalInt(args, "offset", 0),
+                optionalInt(args, "limit", 200));
             case "search_constant_references" -> searchConstantReferences(
-                requireBodyText(args, "program"),
-                requireBodyText(args, "value"),
-                args.has("limit") && !args.get("limit").isJsonNull() ? args.get("limit").getAsInt() : 200);
+                required(args, "program"),
+                required(args, "value"),
+                optionalInt(args, "limit", 200));
             // Write tools take the request body verbatim, so a batch item is that same body —
             // there is nothing to unpack and no second spelling of any parameter to keep in sync.
             case "rename_function" -> writeTools.renameFunction(args);

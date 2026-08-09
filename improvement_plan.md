@@ -767,3 +767,115 @@ matching xrefs to one address after filtering.
 Per the repo's definition of done, each change needs integration tests covering the happy path *and*
 the error path, `make tools-docs` regenerated, and `gradle buildExtension` run before `pytest` — the
 pytest fixture installs the newest `dist/*.zip` and does not rebuild.
+
+---
+
+## 7. Silent acceptance audit — **DONE 2026-08-09**
+
+Raised as a worry that the fixes so far had left tools quietly correcting bad input, against
+design principle 3. A sweep of every input path found four places where that was true. None of
+them were introduced by this plan's earlier work; they predate it.
+
+The unifying failure is not "a bad argument is accepted" — it is **a bad argument taking effect
+as a different, valid argument, and the call returning `ok: true`.** A rejection teaches the
+agent what to send next; a coerced value teaches it that what it sent was right.
+
+### 7.1 A request-body field the tool does not declare was dropped
+
+The largest hole. `UnknownQueryParamFilter` has rejected undeclared *query* parameters since the
+start, but nothing checked a POST body, and POST is where every write lives. Because most body
+fields are optional, a misspelled one did not fail — it took its default:
+
+| Sent | Was | Now |
+|---|---|---|
+| `set_comment` `comment_type: "PLATE"` | wrote a **PRE** comment, `ok: true` | 400 naming the valid fields |
+| `import_binary` `base_addr: "0x08000000"` | loaded at the format's base, reported success | 400 |
+| any batch item with a typo'd key | ran with defaults, counted as a success | item fails, `failed` counts it |
+
+Added `UnknownBodyFieldFilter` alongside the query-param one. Points worth keeping:
+
+- **The accepted vocabulary is the request record's own components**, read by reflection
+  (`ToolHelpers.argumentNames`). It is therefore the published schema by construction — the same
+  reason `countEndpoints` is reflection-derived. A field added to a tool cannot be accepted-but-
+  undocumented, or documented-but-rejected, because there is only one list.
+- The filter must hand the tool an untouched body, so it buffers the entity stream and puts a
+  copy back. A non-object or malformed body is passed through rather than diagnosed here — the
+  tool's own required-parameter checks and `GsonProvider` already say the right thing, and a
+  second opinion from the filter would be a worse one.
+- **A batch item never passes through an HTTP filter**, so `dispatchBatchTool` performs the same
+  check itself against the same reflection-derived set. Without it, batching would have been a
+  way to bypass the strictness of the tool it batches.
+- One message helper (`ApiSupport.unknownNamesMessage`) now backs all three rejections — query
+  parameter, body field, prototype-parameter key — so a misspelling reads the same wherever it
+  lands, and each rejection carries both the valid set and a "did you mean".
+- The suggester picks `comment` over `type` for `comment_type`; both are substrings and `comment`
+  is genuinely the closer string. Left alone: the message lists every valid field anyway, and
+  tuning the metric for one case is how a "did you mean" starts lying in others.
+
+### 7.2 `ref_types` accepted any token
+
+`normalizeRefTypeFilter` uppercased its input and matched it against Ghidra's type names. A name
+that matched nothing filtered *everything* out, so `get_xrefs_to` answered "no cross-references"
+— which reads as a fact about the program rather than as a typo in the request. This is the most
+dangerous shape a silent failure can take, because the wrong answer is a plausible one and there
+is no reason to look further.
+
+The vocabulary is now read off `RefType`'s own constants at class-init, plus the six categories
+`classifyReferenceType` folds them into, so it cannot fall behind the Ghidra version in use. An
+unknown name is rejected with the closest real one. Per coding standard 1 the message names the
+six categories rather than dumping all ~30 exact names.
+
+### 7.3 JSON scalars were coerced, and inconsistently
+
+`required`, `optional` and `optionalBool` all type-check strictly; `optionalInt` and
+`optionalArray` did not. Gson's accessors are lenient in three ways that each read as success —
+verified rather than assumed:
+
+- `"5".getAsInt()` → `5` (a string parses)
+- `5.7.getAsInt()` → `5` (**truncation** — a struct field offset of 8.5 silently became 8)
+- `[5].getAsInt()` → `5` (a single-element array unwraps)
+- `optionalArray` on a non-array threw `IllegalStateException`, which is not
+  `IllegalArgumentException` and so mapped to an **unhandled 500**, not a 400.
+
+Both are now strict, and a rejection names the JSON type actually sent. Two hand-rolled
+extractions bypassing the helpers entirely (`create_struct`'s `override`, `add_struct_field`'s
+`offset`) now use them — `"override": "yes"` read as `false` through Gson's `getAsBoolean`, so
+the tool refused the overwrite for a reason it never reported.
+
+While here, `dispatchBatchTool`'s ~30 hand-written `args.has(x) ? args.get(x).getAsY() : default`
+ternaries were replaced with the same helpers, and `requireBodyText` — a byte-for-byte duplicate
+of `ToolHelpers.required` — was deleted. A batch item is now parsed by exactly the code that
+parses a standalone call, which is the only way the two can be guaranteed to agree.
+
+### 7.4 Two lenient parses
+
+- **`toAddress`** trimmed the hex digits before parsing and `Long.parseUnsignedLong` accepts a
+  leading `+`, so `"0x +1000"` and `"0x+1000"` both resolved to 0x1000. CLAUDE.md names a coerced
+  malformed address as *the* example of what not to do. The digits are now matched against
+  `[0-9a-fA-F]+` first, in one helper shared by `toAddress` and `findFunction`;
+  `import_binary`'s `base_address` got the same treatment.
+- **`findDataType`** rejects an ambiguous name among the program's own types but returned
+  `builtInMatches.get(0)` for an ambiguous built-in. Same rule now applies to both.
+
+Also corrected: `findSymbolAddress`'s javadoc still described returning the first of several
+matching symbols. It has rejected ambiguity for some time; the comment was describing code that
+no longer existed.
+
+### 7.5 Considered and deliberately left alone
+
+- **`add_script` re-copying an edited source** (§5.5) is not this. The argument is a filename,
+  which is valid and unambiguous; the copy is an implementation detail of getting the file where
+  Ghidra can compile it. Nothing is guessed, and the response states which copy ran via
+  `source_state`. The alternative — rejecting — would leave the agent no recovery but to call
+  `add_script` again with the same argument.
+- **Whitespace and case normalisation of a *format*** — `search_bytes`' `"aa bb"` vs `"AA BB"`,
+  `set_comment`'s `type`, a `ref_types` category — is accepting two spellings of the same value,
+  not repairing an invalid one. Left as is.
+- **A blank `query`** on the search tools still means "no filter", matching an absent one. It is
+  an optional filter, and an empty filter is a coherent request.
+
+Covered by 17 cases across `TestArgumentTypeStrictness`, `TestUnknownFieldRejection`,
+`TestRefTypeVocabulary` and `TestAddressStrictness`. Verified against the pre-fix build: 13 fail,
+and the 4 that pass are the intended controls — a declared optional field is still accepted, the
+valid `ref_types` spellings still work, and `"0x10 00"` was already rejected because an interior
+space survives `trim()`.

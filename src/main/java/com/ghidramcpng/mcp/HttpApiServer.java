@@ -85,6 +85,7 @@ public class HttpApiServer {
         ResourceConfig config = new ResourceConfig()
                 .register(ApiExceptionMapper.class)
                 .register(UnknownQueryParamFilter.class)
+                .register(UnknownBodyFieldFilter.class)
                 .register(GsonProvider.class)
                 .register(MetaResource.class)
                 .register(ReadTools.class)
@@ -238,32 +239,71 @@ public class HttpApiServer {
             }
 
             String endpoint = requestContext.getMethod() + " " + requestContext.getUriInfo().getPath();
-            StringBuilder message = new StringBuilder();
-            message.append("Unknown query parameter")
-                    .append(unknown.size() == 1 ? " " : "s ")
-                    .append(quoteJoin(unknown))
-                    .append(" for endpoint '").append(endpoint).append("'. ");
-            if (allowed.isEmpty()) {
-                message.append("This endpoint takes no query parameters.");
-            } else {
-                message.append("Valid parameters: ").append(String.join(", ", allowed)).append(".");
-                String suggestion = ApiSupport.suggestClosest(unknown.get(0), allowed);
-                if (suggestion != null) {
-                    message.append(" Did you mean '").append(suggestion)
-                            .append("' (for '").append(unknown.get(0)).append("')?");
+            requestContext.abortWith(ApiSupport.error(Response.Status.BAD_REQUEST,
+                    ApiSupport.unknownNamesMessage("query parameter", unknown, allowed,
+                            "endpoint '" + endpoint + "'")));
+        }
+    }
+
+    /**
+     * The same rejection for a POST body: a field the tool does not declare is refused rather
+     * than dropped. This is the more dangerous half of the two, because most body fields are
+     * optional — {@code set_comment} sent {@code comment_type} would have written the default
+     * PRE comment and returned success, and {@code import_binary} sent {@code base_addr} would
+     * have loaded at the wrong base and reported it as done.
+     *
+     * <p>The accepted vocabulary is the request record's own components, so it is the published
+     * schema by construction and cannot drift from it.
+     */
+    @Provider
+    public static class UnknownBodyFieldFilter implements ContainerRequestFilter {
+
+        @Context
+        private ResourceInfo resourceInfo;
+
+        @Override
+        public void filter(ContainerRequestContext requestContext) throws IOException {
+            Method method = resourceInfo.getResourceMethod();
+            if (method == null || !method.isAnnotationPresent(jakarta.ws.rs.POST.class)
+                    || !requestContext.hasEntity()) {
+                return;
+            }
+            Set<String> allowed = ToolHelpers.argumentNames(method);
+            if (allowed == null) {
+                return;
+            }
+
+            // The body is consumed here, so hand the tool an identical copy to read.
+            byte[] body = requestContext.getEntityStream().readAllBytes();
+            requestContext.setEntityStream(new java.io.ByteArrayInputStream(body));
+
+            com.google.gson.JsonObject parsed;
+            try {
+                com.google.gson.JsonElement element = com.google.gson.JsonParser.parseString(
+                        new String(body, java.nio.charset.StandardCharsets.UTF_8));
+                if (!element.isJsonObject()) {
+                    return;   // not an object: the tool's own required-parameter checks report it
+                }
+                parsed = element.getAsJsonObject();
+            } catch (RuntimeException e) {
+                return;       // malformed JSON: GsonProvider reports it
+            }
+
+            List<String> unknown = new ArrayList<>();
+            for (String provided : parsed.keySet()) {
+                if (!allowed.contains(provided)) {
+                    unknown.add(provided);
                 }
             }
-            requestContext.abortWith(ApiSupport.error(Response.Status.BAD_REQUEST, message.toString()));
-        }
-
-        private static String quoteJoin(List<String> values) {
-            List<String> quoted = new ArrayList<>(values.size());
-            for (String value : values) {
-                quoted.add("'" + value + "'");
+            if (unknown.isEmpty()) {
+                return;
             }
-            return String.join(", ", quoted);
-        }
 
+            jakarta.ws.rs.Path path = method.getAnnotation(jakarta.ws.rs.Path.class);
+            String tool = path != null ? path.value().replaceAll("^/+", "") : method.getName();
+            requestContext.abortWith(ApiSupport.error(Response.Status.BAD_REQUEST,
+                    ApiSupport.unknownNamesMessage("field", unknown, allowed, "tool '" + tool + "'")));
+        }
     }
 
     /**

@@ -69,6 +69,38 @@ public final class ApiSupport {
         return (best != null && (bestDistance <= threshold || substring)) ? best : null;
     }
 
+    /**
+     * Builds the rejection for names that are not part of an input's vocabulary — an undeclared
+     * query parameter, an unrecognised request-body field, an unknown struct-parameter key.
+     * Shared so a misspelled name reads the same wherever it arrives, and so every such rejection
+     * carries both the valid set and a "did you mean" for the first offender.
+     *
+     * @param noun  singular name for what was rejected, e.g. "query parameter" or "field"
+     * @param scope where it was sent, e.g. "endpoint 'GET /tool/get_function_info'"
+     */
+    public static String unknownNamesMessage(String noun, List<String> unknown,
+            Collection<String> allowed, String scope) {
+        StringBuilder message = new StringBuilder()
+                .append("Unknown ").append(noun).append(unknown.size() == 1 ? " " : "s ")
+                .append(quoteJoin(unknown))
+                .append(" for ").append(scope).append(". ");
+        if (allowed.isEmpty()) {
+            return message.append("This ").append(scope).append(" takes no ").append(noun)
+                    .append("s.").toString();
+        }
+        message.append("Valid ").append(noun).append("s: ").append(String.join(", ", allowed)).append(".");
+        String suggestion = suggestClosest(unknown.get(0), allowed);
+        if (suggestion != null) {
+            message.append(" Did you mean '").append(suggestion)
+                    .append("' (for '").append(unknown.get(0)).append("')?");
+        }
+        return message.toString();
+    }
+
+    private static String quoteJoin(List<String> values) {
+        return values.stream().map(v -> "'" + v + "'").collect(java.util.stream.Collectors.joining(", "));
+    }
+
     private static int levenshtein(String a, String b) {
         int[] prev = new int[b.length() + 1];
         int[] curr = new int[b.length() + 1];

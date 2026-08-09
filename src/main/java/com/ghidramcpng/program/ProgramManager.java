@@ -245,10 +245,16 @@ public class ProgramManager {
                     "base_address '" + baseAddress + "' is missing the 0x prefix. " +
                     "Expected format: 0x followed by hex digits, e.g. 0x08000000");
         }
+        String digits = baseAddress.substring(2);
+        if (!digits.matches("[0-9a-fA-F]+")) {
+            throw new IllegalArgumentException(
+                    "Invalid hex base_address '" + baseAddress + "'. " +
+                    "Expected format: 0x followed by hex digits, e.g. 0x08000000");
+        }
         Address base;
         try {
-            long offset = Long.parseUnsignedLong(baseAddress.substring(2).trim(), 16);
-            base = program.getAddressFactory().getDefaultAddressSpace().getAddress(offset);
+            base = program.getAddressFactory().getDefaultAddressSpace()
+                    .getAddress(Long.parseUnsignedLong(digits, 16));
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException(
                     "Invalid hex base_address '" + baseAddress + "'. " +

@@ -46,6 +46,7 @@ import static com.ghidramcpng.tools.ToolHelpers.findDataType;
 import static com.ghidramcpng.tools.ToolHelpers.findFunction;
 import static com.ghidramcpng.tools.ToolHelpers.optional;
 import static com.ghidramcpng.tools.ToolHelpers.optionalArray;
+import static com.ghidramcpng.tools.ToolHelpers.optionalBool;
 import static com.ghidramcpng.tools.ToolHelpers.optionalInt;
 import static com.ghidramcpng.tools.ToolHelpers.required;
 import static com.ghidramcpng.tools.ToolHelpers.requireMaxLength;
@@ -323,8 +324,7 @@ public class WriteTools {
         String name = requireMaxLength(required(request, "name"), "name", MAX_NAME_LENGTH);
         int size = optionalInt(request, "size", 0);
         String category = optional(request, "category", null);
-        boolean override = request.has("override") && !request.get("override").isJsonNull() &&
-                request.get("override").getAsBoolean();
+        boolean override = optionalBool(request, "override", false);
 
         rules.validate("struct_name", name);
         if (size < 0) {
@@ -385,7 +385,7 @@ public class WriteTools {
         if (comment != null) requireMaxLength(comment, "comment", MAX_COMMENT_LENGTH);
         // -1 = sentinel for "not specified" (append behavior); 0+ = explicit byte offset
         final boolean offsetSpecified = request.has("offset") && !request.get("offset").isJsonNull();
-        final int requestedOffset = offsetSpecified ? request.get("offset").getAsInt() : -1;
+        final int requestedOffset = optionalInt(request, "offset", -1);
         if (offsetSpecified && requestedOffset < 0) {
             throw new IllegalArgumentException(
                     "offset must be >= 0 when specified (negative offsets are not valid struct field positions).");
@@ -704,18 +704,12 @@ public class WriteTools {
      * says nothing about the key that was actually sent.
      */
     private static void rejectUnknownParameterFields(JsonObject parameter, int index) {
-        for (String key : parameter.keySet()) {
-            if (PROTOTYPE_PARAMETER_FIELDS.contains(key)) {
-                continue;
-            }
-            StringBuilder message = new StringBuilder()
-                    .append("Unknown field '").append(key).append("' in 'parameters[").append(index)
-                    .append("]'. Valid fields: ").append(String.join(", ", PROTOTYPE_PARAMETER_FIELDS)).append(".");
-            String suggestion = ApiSupport.suggestClosest(key, PROTOTYPE_PARAMETER_FIELDS);
-            if (suggestion != null) {
-                message.append(" Did you mean '").append(suggestion).append("'?");
-            }
-            throw new IllegalArgumentException(message.toString());
+        List<String> unknown = parameter.keySet().stream()
+                .filter(key -> !PROTOTYPE_PARAMETER_FIELDS.contains(key))
+                .toList();
+        if (!unknown.isEmpty()) {
+            throw new IllegalArgumentException(ApiSupport.unknownNamesMessage(
+                    "field", unknown, PROTOTYPE_PARAMETER_FIELDS, "'parameters[" + index + "]'"));
         }
     }
 

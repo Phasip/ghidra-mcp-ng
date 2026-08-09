@@ -1460,3 +1460,169 @@ class TestErrorReporting:
             assert ghidra_server.ok("get_program_info", {"program": prog})["program"] == prog
         finally:
             ghidra_server.call("delete_script", {"filename": filename})
+
+
+class TestArgumentTypeStrictness:
+    """
+    A JSON value of the wrong type is rejected, never coerced. Gson's own accessors are
+    lenient in ways that all read as a successful call — "5" parses as 5, 5.7 truncates to 5,
+    [5] unwraps to 5, and "yes" reads as the boolean false — so an argument the agent got
+    wrong would take effect as a different argument and come back ok=True.
+    """
+
+    def test_int_field_rejects_a_string(self, ghidra_server: GhidraClient, prog: str):
+        resp = ghidra_server.call(
+            "create_struct",
+            {"program": prog, "name": f"StrictInt{uuid4().hex[:8]}", "size": "8"},
+        )
+        assert resp["ok"] is False
+        assert "size" in resp["error"] and "integer" in resp["error"]
+
+    def test_int_field_rejects_a_fraction_rather_than_truncating(
+            self, ghidra_server: GhidraClient, prog: str):
+        name = f"StrictFrac{uuid4().hex[:8]}"
+        resp = ghidra_server.call(
+            "create_struct", {"program": prog, "name": name, "size": 8.5})
+        assert resp["ok"] is False
+        assert "size" in resp["error"]
+        # The rejection must be total: nothing was created under that name.
+        assert ghidra_server.is_error("get_struct_layout", {"program": prog, "name": name})
+
+    def test_int_field_rejects_a_single_element_array(
+            self, ghidra_server: GhidraClient, prog: str):
+        resp = ghidra_server.call(
+            "create_struct",
+            {"program": prog, "name": f"StrictArr{uuid4().hex[:8]}", "size": [8]},
+        )
+        assert resp["ok"] is False
+        assert "size" in resp["error"]
+
+    def test_bool_field_rejects_a_string(self, ghidra_server: GhidraClient, prog: str):
+        resp = ghidra_server.call(
+            "create_struct",
+            {"program": prog, "name": f"StrictBool{uuid4().hex[:8]}",
+             "size": 4, "override": "yes"},
+        )
+        assert resp["ok"] is False
+        assert "override" in resp["error"] and "boolean" in resp["error"]
+
+    def test_array_field_rejects_a_string_without_a_500(
+            self, ghidra_server: GhidraClient, prog: str):
+        resp = ghidra_server.call(
+            "set_function_prototype",
+            {"program": prog, "name_or_address": "main",
+             "return_type": "int", "parameters": "int argc"},
+        )
+        assert resp["ok"] is False
+        assert "parameters" in resp["error"] and "array" in resp["error"]
+        assert "Internal error" not in resp["error"]
+        assert "error_id" not in resp, "a bad argument is a 400, not a logged server fault"
+
+    def test_batch_arguments_are_as_strict_as_a_standalone_call(
+            self, ghidra_server: GhidraClient, prog: str):
+        result = ghidra_server.ok(
+            "batch_tool_call",
+            {"tool": "search_functions",
+             "calls": [{"program": prog, "limit": "5"}]},
+        )
+        assert result["failed"] == 1
+        assert "limit" in result["results"][0]["error"]
+        assert "integer" in result["results"][0]["error"]
+
+
+class TestUnknownFieldRejection:
+    """
+    A field the tool does not declare is refused, not dropped. Query parameters were already
+    checked; a request body was not, and that is the more dangerous half — most body fields are
+    optional, so a misspelled one takes effect as its default and the call still reports success.
+    """
+
+    def test_misspelled_optional_field_does_not_silently_default(
+            self, ghidra_server: GhidraClient, prog: str):
+        address = _hex(_func_address(ghidra_server, prog, "main"))
+        resp = ghidra_server.call(
+            "set_comment",
+            {"program": prog, "address": address,
+             "comment": "plate please", "comment_type": "PLATE"},
+        )
+        assert resp["ok"] is False
+        assert "comment_type" in resp["error"]
+        assert "set_comment" in resp["error"]
+        assert "type" in resp["error"], "must name the field that was meant among the valid set"
+
+        # And nothing was written under the default type.
+        info = ghidra_server.ok("get_address_info", {"program": prog, "address": address})
+        assert "plate please" not in json.dumps(info)
+
+    def test_unknown_field_names_the_valid_set(self, ghidra_server: GhidraClient, prog: str):
+        resp = ghidra_server.call(
+            "rename_function",
+            {"program": prog, "name_or_address": "main", "new_name": "main", "source": "USER"},
+        )
+        assert resp["ok"] is False
+        for field in ("program", "name_or_address", "new_name"):
+            assert field in resp["error"]
+
+    def test_declared_optional_fields_are_still_accepted(
+            self, ghidra_server: GhidraClient, prog: str):
+        # The check must not reject what the schema actually declares.
+        name = f"DeclaredOk{uuid4().hex[:8]}"
+        result = ghidra_server.ok(
+            "create_struct",
+            {"program": prog, "name": name, "size": 4, "category": "/test", "override": False},
+        )
+        assert result["success"] is True
+
+    def test_batch_items_are_checked_like_standalone_calls(
+            self, ghidra_server: GhidraClient, prog: str):
+        # A key that is not a substring of any valid one, so only a real check can catch it:
+        # without it the item would simply run with defaults and report success.
+        result = ghidra_server.ok(
+            "batch_tool_call",
+            {"tool": "get_function_info",
+             "calls": [{"program": prog, "name_or_address": "main", "timeout_ms": 500}]},
+        )
+        assert result["failed"] == 1
+        error = result["results"][0]["error"]
+        assert "timeout_ms" in error and "name_or_address" in error
+
+
+class TestRefTypeVocabulary:
+    """
+    An unrecognised ref_types value used to filter every reference out, so the tool answered
+    "no cross-references" — a statement about the program, from a typo in the request.
+    """
+
+    def test_unknown_ref_type_is_rejected_not_silently_empty(
+            self, ghidra_server: GhidraClient, prog: str):
+        resp = ghidra_server.call(
+            "get_xrefs_to", {"program": prog, "name_or_address": "main", "ref_types": "CALLS"})
+        assert resp["ok"] is False
+        assert "CALLS" in resp["error"]
+        assert "'CALL'" in resp["error"], "must suggest the real type"
+
+    def test_one_bad_type_among_good_ones_is_rejected(
+            self, ghidra_server: GhidraClient, prog: str):
+        resp = ghidra_server.call(
+            "get_xrefs_to",
+            {"program": prog, "name_or_address": "main", "ref_types": "CALL,NONSENSE_TYPE"})
+        assert resp["ok"] is False
+        assert "NONSENSE_TYPE" in resp["error"]
+
+    def test_categories_and_exact_names_both_work(self, ghidra_server: GhidraClient, prog: str):
+        for value in ("CALL", "call", "DATA", "UNCONDITIONAL_CALL", "READ,WRITE"):
+            resp = ghidra_server.call(
+                "get_xrefs_to",
+                {"program": prog, "name_or_address": "main", "ref_types": value})
+            assert resp["ok"] is True, f"ref_types={value!r} must be accepted: {resp.get('error')}"
+
+
+class TestAddressStrictness:
+    """A malformed address is rejected outright — never trimmed, signed, or otherwise repaired."""
+
+    @pytest.mark.parametrize("address", ["0x +1000", "0x+1000", "0x1000 ", "0x10 00"])
+    def test_malformed_hex_is_not_repaired(
+            self, ghidra_server: GhidraClient, prog: str, address: str):
+        resp = ghidra_server.call("get_address_info", {"program": prog, "address": address})
+        assert resp["ok"] is False
+        assert "0x" in resp["error"]
