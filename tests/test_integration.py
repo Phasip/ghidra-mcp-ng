@@ -273,6 +273,30 @@ class TestStrings:
         for s in result["strings"]:
             assert "SENTINEL" in s.get("value", "").upper()
 
+    def test_search_defined_strings_paging_terminates(
+            self, ghidra_server: GhidraClient, prog: str):
+        # 'truncated' is evaluated after the offset skip, so it means "a match past
+        # this page was dropped" — paging by 'count' must reach an untruncated page.
+        # Deduped on address, not value: a binary legitimately holds the same string
+        # value at several addresses (section names appear in more than one table).
+        seen: list[str] = []
+        offset = 0
+        pages = 0
+        for _ in range(40):
+            page = ghidra_server.ok(
+                "search_defined_strings",
+                {"program": prog, "offset": offset, "limit": 50},
+            )
+            seen.extend(s["address"] for s in page["strings"])
+            pages += 1
+            if not page["truncated"]:
+                break
+            offset += page["count"]
+        else:
+            pytest.fail("paging by offset never reached an untruncated page")
+        assert pages > 1, "fixture has too few strings to exercise paging"
+        assert len(seen) == len(set(seen)), "pages overlapped"
+
     def test_search_defined_strings_rejects_old_filter_param(
             self, ghidra_server: GhidraClient, prog: str):
         # 'filter' was the old spelling; it is now 'query' everywhere. The rename must
@@ -582,6 +606,52 @@ class TestXrefs:
             {"program": prog, "name_or_address": bare},
         )
         assert err["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# 10b. Pagination — 'truncated' means the same thing in every paged tool
+# ---------------------------------------------------------------------------
+
+# (tool, its documented max limit, tool-specific arguments). Each of these returns
+# a 'count' bounded by 'limit' plus a 'truncated' flag, and the flag must mean
+# "a matching item was dropped" — never "the page happened to fill exactly".
+_PAGED_TOOLS = [
+    ("search_functions", 1000, {"query": "add"}),
+    ("search_data_types", 500, {"query": "int"}),
+    ("search_defined_strings", 1000, {}),
+    ("search_bytes", 2000, {"hex_pattern": "53 45 4E 54 49 4E 45 4C"}),
+    ("search_instructions", 2000, {"pattern": "E8 ?? ?? ?? ??"}),
+    ("search_constant_references", 2000, {"value": "-2401053088876216593"}),
+    ("list_globals", 5000, {}),
+    ("get_xrefs_to", 5000, {"name_or_address": "add"}),
+]
+
+
+@pytest.mark.parametrize(
+    "tool,max_limit,args", _PAGED_TOOLS, ids=[t[0] for t in _PAGED_TOOLS]
+)
+class TestPaginationTruncation:
+    def _total(self, ghidra_server: GhidraClient, prog: str, tool, max_limit, args):
+        full = ghidra_server.ok(tool, {"program": prog, "limit": max_limit, **args})
+        assert full["truncated"] is False, f"{tool}: fixture exceeds the tool's own max limit"
+        assert full["count"] > 0, f"{tool}: fixture yields no matches for {args}"
+        return full["count"]
+
+    def test_exact_page_is_not_truncated(
+            self, ghidra_server: GhidraClient, prog: str, tool, max_limit, args):
+        # The case the old 'count >= limit' form got wrong: a page that fills
+        # exactly is a complete result and must not ask the agent to page again.
+        total = self._total(ghidra_server, prog, tool, max_limit, args)
+        exact = ghidra_server.ok(tool, {"program": prog, "limit": total, **args})
+        assert exact["count"] == total
+        assert exact["truncated"] is False
+
+    def test_short_page_is_truncated(
+            self, ghidra_server: GhidraClient, prog: str, tool, max_limit, args):
+        total = self._total(ghidra_server, prog, tool, max_limit, args)
+        short = ghidra_server.ok(tool, {"program": prog, "limit": total - 1, **args})
+        assert short["count"] == total - 1
+        assert short["truncated"] is True
 
 
 # ---------------------------------------------------------------------------

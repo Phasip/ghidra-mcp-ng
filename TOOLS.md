@@ -57,7 +57,7 @@ Search for functions by name substring (case-insensitive). Returns name and addr
 |-----------|------|:--------:|---------|-------------|
 | `program` | string | yes |  | Name of the open program to analyze. Use list_project_files to get valid values. |
 | `query` | string |  |  | Substring to search for (case-insensitive). Pass an empty string to list all functions. |
-| `limit` | integer (int32) |  | 100 | Maximum number of items to return (max 1000). |
+| `limit` | integer (int32) |  | 100 | Maximum number of items to return (max 1000). 'count' is the size of this page; 'truncated' is true when further matches were dropped. |
 | `start_address` | string |  |  | Optional start address (inclusive) for function entry-point filtering. |
 | `end_address` | string |  |  | Optional end address (inclusive) for function entry-point filtering. |
 
@@ -146,7 +146,7 @@ Search for data types by name (case-insensitive). Pass an empty string to list a
 |-----------|------|:--------:|---------|-------------|
 | `program` | string | yes |  | Name of the open program to analyze. Use list_project_files to get valid values. |
 | `query` | string |  |  | Substring filter applied to data type names (case-insensitive). Pass an empty string to list all data types. |
-| `limit` | integer (int32) |  | 50 | Maximum number of items to return (max 500). |
+| `limit` | integer (int32) |  | 50 | Maximum number of items to return (max 500). 'count' is the size of this page; 'truncated' is true when further matches were dropped. |
 
 ## Strings
 
@@ -159,7 +159,7 @@ Search for defined strings across the program listing.
 | `program` | string | yes |  | Name of the open program to analyze. Use list_project_files to see available programs. |
 | `query` | string |  |  | Optional substring match (case-insensitive) applied to string values. Pass an empty string or omit to list all defined strings. |
 | `offset` | integer (int32) |  | 0 | 0-based item offset for pagination. O(n) cost — avoid large offsets on large programs. |
-| `limit` | integer (int32) |  | 200 | Maximum number of items to return (max 1000). 'count' is the size of this page, not the total number of matches. |
+| `limit` | integer (int32) |  | 200 | Maximum number of items to return (max 1000). 'count' is the size of this page; 'truncated' is true when further matches were dropped — raise 'offset' by 'count' to page on. |
 
 ## Write operations
 
@@ -390,7 +390,7 @@ List named global symbols grouped by functions, data, and labels, with optional 
 | `section` | string |  |  | Optional memory block/section name filter, e.g. .data or .bss. |
 | `start_address` | string |  |  | Optional start address (inclusive) for symbol address filtering. |
 | `end_address` | string |  |  | Optional end address (inclusive) for symbol address filtering. |
-| `limit` | integer (int32) |  | 500 | Maximum number of symbols to return across all groups (max 5000). |
+| `limit` | integer (int32) |  | 500 | Maximum number of symbols to return across all groups (max 5000). 'count' is the size of this page; 'truncated' is true when further matches were dropped. |
 
 ### `list_scripts`
 
@@ -431,7 +431,7 @@ Find all instructions that use a specific constant as an immediate operand. Usef
 |-----------|------|:--------:|---------|-------------|
 | `program` | string | yes |  | Name of the open program to analyze. Use list_project_files to see available programs. |
 | `value` | string | yes |  | Constant to search for. Accepts decimal (e.g. 65744), 0x-prefixed hex (e.g. 0x100D0), or a negative value treated as its unsigned bit pattern (e.g. -1 matches 0xFFFFFFFFFFFFFFFF). |
-| `limit` | integer (int32) |  | 200 | Maximum number of hits to return (max 2000). |
+| `limit` | integer (int32) |  | 200 | Maximum number of hits to return (max 2000). 'count' is the size of this page; 'truncated' is true when further matches were dropped. |
 
 ### `search_instructions`
 

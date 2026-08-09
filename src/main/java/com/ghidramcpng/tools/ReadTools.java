@@ -50,6 +50,7 @@ import jakarta.ws.rs.core.MediaType;
 
 import java.util.Iterator;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
@@ -159,7 +160,7 @@ public class ReadTools {
             @QueryParam("start_address") String startAddress,
             @Parameter(description = "Optional end address (inclusive) for symbol address filtering.")
             @QueryParam("end_address") String endAddress,
-            @Parameter(description = "Maximum number of symbols to return across all groups (max 5000).")
+            @Parameter(description = "Maximum number of symbols to return across all groups (max 5000). 'count' is the size of this page; 'truncated' is true when further matches were dropped.")
             @QueryParam("limit") @DefaultValue("500") int limit) {
         Program program = openProgram(programName);
         int validatedLimit = requireLimit(limit, 5000, "limit");
@@ -172,10 +173,8 @@ public class ReadTools {
         List<GlobalSymbolEntry> labels = new ArrayList<>();
 
         int total = 0;
+        boolean truncated = false;
         for (Symbol symbol : program.getSymbolTable().getAllSymbols(true)) {
-            if (total >= validatedLimit) {
-                break;
-            }
             if (!isGlobalCandidate(symbol)) {
                 continue;
             }
@@ -192,6 +191,13 @@ public class ReadTools {
                 if (blockName == null || !blockName.equalsIgnoreCase(sectionFilter)) {
                     continue;
                 }
+            }
+
+            // Checked after the filters so 'truncated' means "a matching symbol was dropped",
+            // never "the page happened to fill exactly".
+            if (total >= validatedLimit) {
+                truncated = true;
+                break;
             }
 
             GlobalSymbolEntry entry = new GlobalSymbolEntry(
@@ -211,7 +217,7 @@ public class ReadTools {
             total++;
         }
 
-        return new ListGlobalsResponse(functions, data, labels, total, total >= validatedLimit);
+        return new ListGlobalsResponse(functions, data, labels, total, truncated);
     }
 
     @POST
@@ -629,7 +635,7 @@ public class ReadTools {
             @QueryParam("program") String programName,
             @Parameter(description = "Substring to search for (case-insensitive). Pass an empty string to list all functions.")
             @QueryParam("query") @DefaultValue("") String query,
-            @Parameter(description = "Maximum number of items to return (max 1000).")
+            @Parameter(description = "Maximum number of items to return (max 1000). 'count' is the size of this page; 'truncated' is true when further matches were dropped.")
             @QueryParam("limit") @DefaultValue("100") int limit,
             @Parameter(description = "Optional start address (inclusive) for function entry-point filtering.")
             @QueryParam("start_address") String startAddress,
@@ -642,18 +648,23 @@ public class ReadTools {
                 "start_address", "end_address");
 
         List<FunctionRef> found = new ArrayList<>();
+        boolean truncated = false;
         for (Function function : program.getFunctionManager().getFunctions(true)) {
             if (range != null && !isWithinRange(function.getEntryPoint(), range)) {
                 continue;
             }
-            if (loweredQuery.isEmpty() || function.getName().toLowerCase().contains(loweredQuery)) {
-                found.add(FunctionRef.from(function));
-                if (found.size() >= validatedLimit) {
-                    break;
-                }
+            if (!loweredQuery.isEmpty() && !function.getName().toLowerCase().contains(loweredQuery)) {
+                continue;
             }
+            // Checked after the filters so 'truncated' means "a matching function was dropped",
+            // never "the page happened to fill exactly".
+            if (found.size() >= validatedLimit) {
+                truncated = true;
+                break;
+            }
+            found.add(FunctionRef.from(function));
         }
-        return new SearchFunctionsResponse(found, found.size());
+        return new SearchFunctionsResponse(found, found.size(), truncated);
     }
 
     @GET
@@ -667,41 +678,56 @@ public class ReadTools {
             @QueryParam("program") String programName,
             @Parameter(description = "Substring filter applied to data type names (case-insensitive). Pass an empty string to list all data types.")
             @QueryParam("query") @DefaultValue("") String query,
-            @Parameter(description = "Maximum number of items to return (max 500).")
+            @Parameter(description = "Maximum number of items to return (max 500). 'count' is the size of this page; 'truncated' is true when further matches were dropped.")
             @QueryParam("limit") @DefaultValue("50") int limit) {
         Program program = openProgram(programName);
         int validatedLimit = requireLimit(limit, 500, "limit");
         String loweredQuery = query == null ? "" : query.trim().toLowerCase();
         List<DataTypeEntry> found = new ArrayList<>();
+        boolean truncated = false;
 
         // Collect type names already gathered to avoid duplicates when built-in types
         // are also present in the program's DataTypeManager (e.g. after auto-analysis).
         Set<String> seen = new java.util.HashSet<>();
 
         Iterator<DataType> iterator = program.getDataTypeManager().getAllDataTypes();
-        while (iterator.hasNext() && found.size() < validatedLimit) {
+        while (iterator.hasNext()) {
             DataType dataType = iterator.next();
-            if (loweredQuery.isEmpty() || dataType.getName().toLowerCase().contains(loweredQuery)) {
-                found.add(DataTypeEntry.from(dataType));
-                seen.add(dataType.getDataTypePath().getPath());
+            if (!loweredQuery.isEmpty() && !dataType.getName().toLowerCase().contains(loweredQuery)) {
+                continue;
             }
+            // Checked after the filter so 'truncated' means "a matching type was dropped",
+            // never "the page happened to fill exactly".
+            if (found.size() >= validatedLimit) {
+                truncated = true;
+                break;
+            }
+            found.add(DataTypeEntry.from(dataType));
+            seen.add(dataType.getDataTypePath().getPath());
         }
 
         // Also include built-in types (int, byte, dword, etc.) which live in
         // BuiltInDataTypeManager and are absent from the program's manager on
-        // programs without debug symbols.
-        Iterator<DataType> builtInIterator =
-                BuiltInDataTypeManager.getDataTypeManager().getAllDataTypes();
-        while (builtInIterator.hasNext() && found.size() < validatedLimit) {
+        // programs without debug symbols. Skipped entirely once the program's own
+        // manager has already overflowed the page.
+        Iterator<DataType> builtInIterator = truncated
+                ? Collections.emptyIterator()
+                : BuiltInDataTypeManager.getDataTypeManager().getAllDataTypes();
+        while (builtInIterator.hasNext()) {
             DataType dataType = builtInIterator.next();
             String path = dataType.getDataTypePath().getPath();
             if (seen.contains(path)) continue;
-            if (loweredQuery.isEmpty() || dataType.getName().toLowerCase().contains(loweredQuery)) {
-                found.add(DataTypeEntry.from(dataType));
+            if (!loweredQuery.isEmpty() && !dataType.getName().toLowerCase().contains(loweredQuery)) {
+                continue;
             }
+            if (found.size() >= validatedLimit) {
+                truncated = true;
+                break;
+            }
+            found.add(DataTypeEntry.from(dataType));
         }
 
-        return new SearchDataTypesResponse(found, found.size());
+        return new SearchDataTypesResponse(found, found.size(), truncated);
     }
 
     @GET
@@ -716,12 +742,13 @@ public class ReadTools {
             @QueryParam("query") String query,
             @Parameter(description = "0-based item offset for pagination. O(n) cost — avoid large offsets on large programs.")
             @QueryParam("offset") @DefaultValue("0") int offset,
-            @Parameter(description = "Maximum number of items to return (max 1000). 'count' is the size of this page, not the total number of matches.")
+            @Parameter(description = "Maximum number of items to return (max 1000). 'count' is the size of this page; 'truncated' is true when further matches were dropped — raise 'offset' by 'count' to page on.")
             @QueryParam("limit") @DefaultValue("200") int limit) {
         Program program = openProgram(programName);
         int validatedOffset = requireNonNegative(offset, "offset");
         int validatedLimit = requireLimit(limit, 1000, "limit");
         List<StringEntry> strings = new ArrayList<>();
+        boolean truncated = false;
         int skip = validatedOffset;
         // O(n) pagination: Ghidra's defined-data iterator does not support random access;
         // offset items must be consumed linearly.
@@ -737,12 +764,15 @@ public class ReadTools {
                 skip--;
                 continue;
             }
-            strings.add(StringEntry.from(data));
+            // Checked after the filters and the offset skip so 'truncated' means "a matching
+            // string past this page was dropped", never "the page happened to fill exactly".
             if (strings.size() >= validatedLimit) {
+                truncated = true;
                 break;
             }
+            strings.add(StringEntry.from(data));
         }
-        return new SearchDefinedStringsResponse(strings, strings.size());
+        return new SearchDefinedStringsResponse(strings, strings.size(), truncated);
     }
 
     @GET
@@ -768,6 +798,8 @@ public class ReadTools {
         AddressRange range = resolveAddressRange(program, startAddress, endAddress,
                 "start_address", "end_address");
 
+        // Scan one hit past the page so 'truncated' means "a matching hit was dropped",
+        // never "the page happened to fill exactly".
         List<PatternHit> hits = new ArrayList<>();
         for (MemoryBlock block : program.getMemory().getBlocks()) {
             if (!block.isInitialized()) {
@@ -777,13 +809,17 @@ public class ReadTools {
             if (blockRange == null) {
                 continue;
             }
-            scanBlockForPattern(program, blockRange, pattern, validatedLimit, hits);
-            if (hits.size() >= validatedLimit) {
+            scanBlockForPattern(program, blockRange, pattern, validatedLimit + 1, hits);
+            if (hits.size() > validatedLimit) {
                 break;
             }
         }
 
-        return new SearchBytesResponse(pattern.normalized, hits, hits.size(), hits.size() >= validatedLimit);
+        boolean truncated = hits.size() > validatedLimit;
+        if (truncated) {
+            hits.remove(hits.size() - 1);
+        }
+        return new SearchBytesResponse(pattern.normalized, hits, hits.size(), truncated);
     }
 
     @GET
@@ -810,15 +846,22 @@ public class ReadTools {
                 "start_address", "end_address");
 
         List<PatternHit> hits = new ArrayList<>();
+        boolean truncated = false;
         var listing = program.getListing();
         var iterator = range == null
                 ? listing.getInstructions(true)
                 : listing.getInstructions(new AddressSet(range.start, range.end), true);
-        while (iterator.hasNext() && hits.size() < validatedLimit) {
+        while (iterator.hasNext()) {
             Instruction insn = iterator.next();
             byte[] bytes = safeInstructionBytes(insn);
             if (!pattern.matchesPrefix(bytes)) {
                 continue;
+            }
+            // Checked after the match so 'truncated' means "a matching instruction was
+            // dropped", never "the page happened to fill exactly".
+            if (hits.size() >= validatedLimit) {
+                truncated = true;
+                break;
             }
             Function containing = program.getFunctionManager().getFunctionContaining(insn.getAddress());
             hits.add(new PatternHit(
@@ -827,7 +870,7 @@ public class ReadTools {
                     formatInstruction(insn)));
         }
 
-        return new SearchInstructionsResponse(pattern.normalized, hits, hits.size(), hits.size() >= validatedLimit);
+        return new SearchInstructionsResponse(pattern.normalized, hits, hits.size(), truncated);
     }
 
     @GET
@@ -993,7 +1036,7 @@ public class ReadTools {
             @QueryParam("program") String programName,
             @Parameter(description = "Constant to search for. Accepts decimal (e.g. 65744), 0x-prefixed hex (e.g. 0x100D0), or a negative value treated as its unsigned bit pattern (e.g. -1 matches 0xFFFFFFFFFFFFFFFF).", required = true)
             @QueryParam("value") String valueText,
-            @Parameter(description = "Maximum number of hits to return (max 2000).")
+            @Parameter(description = "Maximum number of hits to return (max 2000). 'count' is the size of this page; 'truncated' is true when further matches were dropped.")
             @QueryParam("limit") @DefaultValue("200") int limit) {
         Program program = openProgram(programName);
         int validatedLimit = requireLimit(limit, 2000, "limit");
@@ -1013,12 +1056,19 @@ public class ReadTools {
                     "Invalid value '" + rawValue + "': expected a decimal integer or 0x-prefixed hex, e.g. 0x100D0 or 65744.");
         }
         List<ConstantHit> hits = new ArrayList<>();
+        boolean truncated = false;
+        scan:
         for (Instruction insn : program.getListing().getInstructions(true)) {
-            if (hits.size() >= validatedLimit) break;
             for (int op = 0; op < insn.getNumOperands(); op++) {
                 Scalar scalar = insn.getScalar(op);
-                
+
                 if (scalar != null && scalar.getUnsignedValue() == targetValue) {
+                    // Checked after the match so 'truncated' means "a matching instruction was
+                    // dropped", never "the page happened to fill exactly".
+                    if (hits.size() >= validatedLimit) {
+                        truncated = true;
+                        break scan;
+                    }
                     Function fn = program.getFunctionManager().getFunctionContaining(insn.getAddress());
                     hits.add(new ConstantHit(
                             insn.getAddress(),
@@ -1028,7 +1078,7 @@ public class ReadTools {
                 }
             }
         }
-        return new SearchConstantReferencesResponse(targetValue, hits, hits.size());
+        return new SearchConstantReferencesResponse(targetValue, hits, hits.size(), truncated);
     }
 
     private static AddressRange resolveAddressRange(Program program,
@@ -1566,6 +1616,7 @@ public class ReadTools {
             List<GlobalSymbolEntry> labels,
             @Schema(description = "Number of items in this response. This is the size of the returned page, bounded by 'limit' — not the total number of matches in the program.")
             int count,
+            @Schema(description = "True when a matching symbol was dropped because 'limit' was reached. Narrow with 'section' or the address range rather than raising 'limit'.")
             boolean truncated) {
         }
 
@@ -1621,7 +1672,9 @@ public class ReadTools {
     public record SearchFunctionsResponse(
             List<FunctionRef> functions,
             @Schema(description = "Number of items in this response. This is the size of the returned page, bounded by 'limit' — not the total number of matches in the program.")
-            int count) {
+            int count,
+            @Schema(description = "True when a matching function was dropped because 'limit' was reached. Narrow 'query' or the address range rather than raising 'limit'.")
+            boolean truncated) {
     }
 
     public record GetCallingConventionsResponse(
@@ -1634,13 +1687,17 @@ public class ReadTools {
     public record SearchDataTypesResponse(
             List<DataTypeEntry> data_types,
             @Schema(description = "Number of items in this response. This is the size of the returned page, bounded by 'limit' — not the total number of matches in the program.")
-            int count) {
+            int count,
+            @Schema(description = "True when a matching data type was dropped because 'limit' was reached. Narrow 'query' rather than raising 'limit'.")
+            boolean truncated) {
     }
 
     public record SearchDefinedStringsResponse(
             List<StringEntry> strings,
             @Schema(description = "Number of items in this response. This is the size of the returned page, bounded by 'limit' — not the total number of matches in the program.")
-            int count) {
+            int count,
+            @Schema(description = "True when a matching string past this page was dropped because 'limit' was reached. Page on with 'offset', or narrow 'query'.")
+            boolean truncated) {
     }
 
         public record ReadDataResponse(
@@ -1697,6 +1754,7 @@ public class ReadTools {
             List<PatternHit> hits,
             @Schema(description = "Number of items in this response. This is the size of the returned page, bounded by 'limit' — not the total number of matches in the program.")
             int count,
+            @Schema(description = "True when a matching hit was dropped because 'limit' was reached. Narrow the address range rather than raising 'limit'.")
             boolean truncated) {
         }
 
@@ -1705,6 +1763,7 @@ public class ReadTools {
             List<PatternHit> hits,
             @Schema(description = "Number of items in this response. This is the size of the returned page, bounded by 'limit' — not the total number of matches in the program.")
             int count,
+            @Schema(description = "True when a matching instruction was dropped because 'limit' was reached. Narrow the address range rather than raising 'limit'.")
             boolean truncated) {
         }
 
@@ -1815,7 +1874,9 @@ public class ReadTools {
             @Schema(description = "Instructions that reference the constant as an immediate operand.")
             List<ConstantHit> hits,
             @Schema(description = "Number of items in this response. This is the size of the returned page, bounded by 'limit' — not the total number of matches in the program.")
-            int count) {
+            int count,
+            @Schema(description = "True when a matching instruction was dropped because 'limit' was reached.")
+            boolean truncated) {
     }
 
     private record AddressRange(Address start, Address end) {

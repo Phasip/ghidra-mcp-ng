@@ -530,10 +530,47 @@ scan on every call. Every `count` that a `limit` can bound now carries a `@Schem
 size of the returned page, and every `limit` names its own cap (1000 / 500 / 2000 / 5000) so
 `TOOLS.md` carries them — the caps were previously discoverable only by exceeding one.
 
-**Left open, same bug class:** `search_functions`, `search_data_types` and
-`search_defined_strings` truncate silently — they have a `limit` but no `truncated` flag, so a
-result of exactly `limit` items is indistinguishable from a complete one. Worth fixing the same way
-the xref tools just were.
+**Silent truncation — DONE 2026-08-09.** `search_functions`, `search_data_types` and
+`search_defined_strings` had a `limit` but no `truncated` flag, so a result of exactly `limit` items
+was indistinguishable from a complete one. Fixed the same way the xref tools were, and the sweep
+turned up more than the three the audit named:
+
+| Tool | Was | Now |
+|---|---|---|
+| `search_functions` | no flag | precise `truncated` |
+| `search_data_types` | no flag | precise `truncated` |
+| `search_defined_strings` | no flag | precise `truncated` |
+| `search_constant_references` | no flag | precise `truncated` |
+| `search_bytes` | `count >= limit` | precise `truncated` |
+| `search_instructions` | `count >= limit` | precise `truncated` |
+| `list_globals` | `count >= limit` | precise `truncated` |
+
+Points worth keeping:
+
+- **The loose form `count >= limit` is a *false positive*, not a missing flag**, and that is the
+  worse of the two failures the audit lumped together. A silently truncated page at least looks
+  complete; a page that lies about being truncated sends the agent back for a second call that
+  returns the identical result, which is exactly the round-trip cost §5.1 exists to remove. So the
+  three tools that already carried a flag needed the same change as the four that carried none.
+- Precise means the limit is checked **after** every filter and after `search_defined_strings`'
+  offset skip, so `truncated` means "a matching item past this page was dropped". `search_bytes` is
+  the one that cannot do it inline — `scanBlockForPattern` fills a list to a cap — so it scans for
+  `limit + 1` hits and drops the extra. The extra scan only runs to completion when the match count
+  is exactly `limit`, which is the one case where the answer matters.
+- `search_data_types` reads two managers in sequence (the program's, then built-ins). Once the first
+  overflows the page the second is skipped entirely rather than walked to rediscover the same
+  overflow — `Collections.emptyIterator()` keeps that a data decision rather than a second branch.
+- Not given a flag, deliberately: `list_exports` / `list_imports` / `list_data_type_categories`
+  (no `limit` — they return everything, and say so), `get_function_callees` (no `limit`), and
+  `read_data`'s `item_count` (a read shape, not a page — see above).
+
+Covered by `TestPaginationTruncation`, parametrised over all seven plus `get_xrefs_to` as the
+already-correct control: it derives the true match count from a max-limit query, then asserts a page
+of exactly that size reports `truncated: false` and a page one shorter reports `true`. Plus
+`test_search_defined_strings_paging_terminates`, which pages by `offset` to a final untruncated page
+— the only tool where `truncated` and `offset` interact. Verified against the pre-fix build: 12 of
+the 17 new cases fail, and the 5 that pass are precisely the ones where the loose form already
+agreed (the short-page direction, and both `get_xrefs_to` cases).
 
 ### 5.2 Naming rules on labels and globals — **DONE 2026-08-08**
 
@@ -653,9 +690,8 @@ Each step is independently shippable.
 - **§2.5** — closed as not implementable; see the section. `run_script` documents the transaction
   contract instead, and the `end(true)` / `start()` bracket stays the way to run a
   `setLanguage`-style operation.
-- **§5.1 leftover** — `search_functions` / `search_data_types` / `search_defined_strings` truncate
-  silently: they take a `limit` but return no `truncated`, so a full page is indistinguishable from
-  a complete result. Same fix the xref tools just got.
+- ~~**§5.1 leftover** — silent truncation~~ — **done 2026-08-09.** Seven tools, four of which had no
+  flag and three of which had a false-positive one; see §5.1.
 - **§5.3 leftover** — `add_script` still snapshots, and `run_script` still cannot tell that the
   registered copy has gone stale. The snapshot is now documented (a plausible success response
   running old code is at least predictable), but comparing mtime/hash and re-copying or warning is
