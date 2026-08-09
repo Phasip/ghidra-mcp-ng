@@ -47,6 +47,13 @@ public class ScriptTool {
 
     public static final int TOOL_COUNT = ToolHelpers.countEndpoints(ScriptTool.class);
 
+    /**
+     * Suffix of the sidecar file recording where an add_script'd copy came from, written
+     * next to the copy in the user script directory. Chosen so that it matches no
+     * GhidraScriptProvider extension — list_scripts and Ghidra itself both ignore it.
+     */
+    private static final String SOURCE_SIDECAR_SUFFIX = ".mcp-source";
+
     private final ProgramManager mgr;
 
     /**
@@ -140,7 +147,9 @@ public class ScriptTool {
     @Operation(
             operationId = "add_script",
             summary = "Copy an existing script file into the Ghidra user script directory, making it available to run_script. "
-                    + "This takes a snapshot: later edits to the source file are NOT picked up — call add_script again after every edit."
+                    + "The source path is remembered, so later edits to that file ARE picked up: every run_script re-copies it "
+                    + "if the contents have changed and reports which source it ran via 'source_path' and 'source_state'. "
+                    + "Call add_script again only to point the same filename at a different source file."
     )
     @ApiResponse(responseCode = "200", description = "Script add result",
             content = @Content(schema = @Schema(implementation = AddScriptResponse.class)))
@@ -163,9 +172,22 @@ public class ScriptTool {
             String filename = source.getFileName().toString();
             ensureSupportedScriptName(filename);
 
+            // resolveScript prefers the extension's own directory, so a colliding name would
+            // copy successfully and then never be the thing run_script runs.
+            java.nio.file.Path extDir = getExtensionScriptsDir();
+            if (extDir != null && Files.isRegularFile(extDir.resolve(filename))) {
+                throw new IllegalArgumentException(
+                        "'" + filename + "' is the name of a script bundled with this extension, and bundled "
+                        + "scripts take priority over the user script directory — the copy would never run. "
+                        + "Rename the source file.");
+            }
+
             java.nio.file.Path target = ensureScriptDirectory().resolve(filename);
             Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
-            return new AddScriptResponse(true, filename);
+            // Record where the copy came from so run_script can pick up later edits rather
+            // than reporting success while running this snapshot forever.
+            Files.writeString(sourceSidecar(target), source.toString());
+            return new AddScriptResponse(true, filename, source.toString());
         });
     }
 
@@ -180,7 +202,9 @@ public class ScriptTool {
                       + "Ghidra runs the script inside a transaction it opens around run(), so a script must NOT open its own outer transaction. "
                       + "An operation that manages its own transaction (Program.setLanguage is the usual one) must be wrapped in end(true) before "
                       + "and start() after, or it throws; returning from run() with an extra transaction still open is an error and the program is "
-                      + "evicted and reopened."
+                      + "evicted and reopened. "
+                      + "For a script added via add_script, the registered source file is re-copied first if it has changed, so an edit needs no "
+                      + "second add_script — 'source_state' says which copy actually ran."
     )
     @ApiResponse(responseCode = "200", description = "Script execution result",
             content = @Content(schema = @Schema(implementation = RunScriptResponse.class)))
@@ -196,7 +220,8 @@ public class ScriptTool {
             String[] args = parseOptionalArgs(request);
             Program program = mgr.getOrOpen(programName);
             java.nio.file.Path scriptPath = resolveScript(filename);
-            return executeScript(program, scriptPath, args);
+            SourceSync source = syncWithRegisteredSource(scriptPath);
+            return executeScript(program, scriptPath, args, source);
         });
     }
 
@@ -223,12 +248,48 @@ public class ScriptTool {
             if (!deleted && Files.exists(scriptPath)) {
                 throw new IllegalStateException("Failed to delete script: " + filename);
             }
+            Files.deleteIfExists(sourceSidecar(scriptPath));
             return new DeleteScriptResponse(true, filename);
         });
     }
 
-    private RunScriptResponse executeScript(Program program, java.nio.file.Path scriptPath, String[] args)
-            throws Exception {
+    /** Where a runnable script's content came from, and whether it was refreshed before running. */
+    private record SourceSync(String path, String state) {
+    }
+
+    private static final SourceSync NO_REGISTERED_SOURCE = new SourceSync(null, "no_registered_source");
+
+    /**
+     * Brings the copy in the user script directory back in step with the source file
+     * add_script was pointed at. add_script copies rather than referencing, so without this
+     * an edited script runs its stale snapshot and still reports success — the worst kind of
+     * failure, because the response is indistinguishable from a correct run.
+     *
+     * <p>Comparison is by content, not mtime: a copy is a few KB, and mtime is the thing most
+     * likely to differ for reasons that have nothing to do with the script changing.
+     */
+    private java.nio.file.Path sourceSidecar(java.nio.file.Path scriptPath) {
+        return scriptPath.resolveSibling(scriptPath.getFileName() + SOURCE_SIDECAR_SUFFIX);
+    }
+
+    private SourceSync syncWithRegisteredSource(java.nio.file.Path scriptPath) throws java.io.IOException {
+        java.nio.file.Path sidecar = sourceSidecar(scriptPath);
+        if (!Files.isRegularFile(sidecar)) {
+            return NO_REGISTERED_SOURCE;
+        }
+        java.nio.file.Path source = java.nio.file.Path.of(Files.readString(sidecar).strip());
+        if (!Files.isRegularFile(source)) {
+            return new SourceSync(source.toString(), "source_missing");
+        }
+        if (Arrays.equals(Files.readAllBytes(source), Files.readAllBytes(scriptPath))) {
+            return new SourceSync(source.toString(), "current");
+        }
+        Files.copy(source, scriptPath, StandardCopyOption.REPLACE_EXISTING);
+        return new SourceSync(source.toString(), "refreshed");
+    }
+
+    private RunScriptResponse executeScript(Program program, java.nio.file.Path scriptPath, String[] args,
+            SourceSync source) throws Exception {
         // Hold the per-program lock for the entire script run so that concurrent write
         // tool calls (withTransaction) are blocked rather than racing with a script that
         // opens its own Ghidra transactions internally.
@@ -259,7 +320,8 @@ public class ScriptTool {
             printWriter.flush();
 
             return new RunScriptResponse(true, scriptPath.getFileName().toString(),
-                    stringWriter.toString(), program.getName());
+                    stringWriter.toString(), program.getName(),
+                    source.path(), source.state());
         });
     }
 
@@ -461,7 +523,11 @@ public class ScriptTool {
             String file_path) {
     }
 
-    public record AddScriptResponse(boolean success, String filename) {
+    public record AddScriptResponse(
+            boolean success,
+            String filename,
+            @Schema(description = "Absolute path of the source file now registered for this filename. run_script re-copies from here whenever it has changed.")
+            String source_path) {
     }
 
     public record RunScriptRequest(
@@ -473,7 +539,19 @@ public class ScriptTool {
             List<String> args) {
     }
 
-    public record RunScriptResponse(boolean success, String filename, String output, String program) {
+    public record RunScriptResponse(
+            boolean success,
+            String filename,
+            String output,
+            String program,
+            @Schema(description = "Absolute path of the source file registered by add_script, or null if this script was not added that way (a bundled script, or one dropped into the user script directory by hand).")
+            String source_path,
+            @Schema(description = "Relationship between the script that just ran and its registered source: "
+                    + "'current' — the copy already matched the source; "
+                    + "'refreshed' — the source had changed and its new content was copied in and run; "
+                    + "'source_missing' — the registered source file no longer exists, so the last registered copy ran and may be out of date; "
+                    + "'no_registered_source' — the script was not added via add_script, so there is nothing to compare against.")
+            String source_state) {
     }
 
     public record DeleteScriptRequest(

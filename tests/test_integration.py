@@ -1222,6 +1222,110 @@ class TestScript:
         after_delete = ghidra_server.ok("list_scripts")
         assert set(after_delete.get("scripts", [])) == before_names
 
+    def _managed_script(self, tmp_path: Path, sentinel: str):
+        """Write a script that prints `sentinel`, and return (source path, class name)."""
+        script_name = f"EditedIntegrationScript{uuid4().hex}"
+        source = tmp_path / f"{script_name}.java"
+        source.write_text(
+            "import ghidra.app.script.GhidraScript;\n"
+            f"public class {script_name} extends GhidraScript {{\n"
+            "    @Override\n"
+            "    public void run() throws Exception {\n"
+            f'        println("{sentinel}");\n'
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        return source, script_name
+
+    def test_run_script_picks_up_an_edited_source(
+            self, ghidra_server: GhidraClient, prog: str, tmp_path: Path):
+        # The failure this guards: add_script copies, so an edited script used to run its
+        # stale snapshot and still report success — indistinguishable from a correct run.
+        first, script_name = self._managed_script(tmp_path, "MCP_EDIT_BEFORE")
+        added = ghidra_server.ok("add_script", {"file_path": str(first)})
+        filename = added["filename"]
+        assert added["source_path"] == str(first)
+        try:
+            run = ghidra_server.ok("run_script", {"program": prog, "filename": filename})
+            assert "MCP_EDIT_BEFORE" in run["output"]
+            assert run["source_state"] == "current"
+            assert run["source_path"] == str(first)
+
+            first.write_text(
+                first.read_text(encoding="utf-8").replace("MCP_EDIT_BEFORE", "MCP_EDIT_AFTER"),
+                encoding="utf-8",
+            )
+
+            # No second add_script: the edit alone must change what runs.
+            rerun = ghidra_server.ok("run_script", {"program": prog, "filename": filename})
+            assert rerun["source_state"] == "refreshed"
+            assert "MCP_EDIT_AFTER" in rerun["output"]
+            assert "MCP_EDIT_BEFORE" not in rerun["output"]
+
+            # Once re-copied, the next run has nothing left to refresh.
+            again = ghidra_server.ok("run_script", {"program": prog, "filename": filename})
+            assert again["source_state"] == "current"
+            assert "MCP_EDIT_AFTER" in again["output"]
+        finally:
+            ghidra_server.call("delete_script", {"filename": filename})
+
+    def test_run_script_reports_a_deleted_source(
+            self, ghidra_server: GhidraClient, prog: str, tmp_path: Path):
+        # A registered source that has gone away is not an error — the last registered copy
+        # is still the best available — but the response must not claim it is current.
+        source, _ = self._managed_script(tmp_path, "MCP_SOURCE_GONE")
+        filename = ghidra_server.ok("add_script", {"file_path": str(source)})["filename"]
+        try:
+            source.unlink()
+            run = ghidra_server.ok("run_script", {"program": prog, "filename": filename})
+            assert run["success"] is True
+            assert run["source_state"] == "source_missing"
+            assert run["source_path"] == str(source)
+            assert "MCP_SOURCE_GONE" in run["output"]
+        finally:
+            ghidra_server.call("delete_script", {"filename": filename})
+
+    def test_run_script_reports_no_source_for_a_bundled_script(
+            self, ghidra_server: GhidraClient, prog: str):
+        result = ghidra_server.ok(
+            "run_script", {"program": prog, "filename": "PEAnalyser.java"}
+        )
+        assert result["source_state"] == "no_registered_source"
+        # Nulls are omitted API-wide, so there is simply no source_path key.
+        assert "source_path" not in result
+
+    def test_add_script_rejects_a_bundled_script_name(
+            self, ghidra_server: GhidraClient, tmp_path: Path):
+        # A colliding name would copy fine and then never be what run_script runs, since
+        # the extension's own directory takes priority.
+        clash = tmp_path / "PEAnalyser.java"
+        clash.write_text("// not the real one\n", encoding="utf-8")
+        resp = ghidra_server.call("add_script", {"file_path": str(clash)})
+        assert resp["ok"] is False
+        assert "PEAnalyser.java" in resp["error"]
+        assert "bundled" in resp["error"]
+
+    def test_delete_script_removes_the_source_registration(
+            self, ghidra_server: GhidraClient, prog: str, tmp_path: Path):
+        # Re-adding after a delete must start from a clean registration, not inherit the
+        # sidecar the previous copy left behind.
+        source, _ = self._managed_script(tmp_path, "MCP_REREGISTER")
+        filename = ghidra_server.ok("add_script", {"file_path": str(source)})["filename"]
+        ghidra_server.ok("delete_script", {"filename": filename})
+
+        moved = tmp_path / "moved" / source.name
+        moved.parent.mkdir()
+        moved.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        readded = ghidra_server.ok("add_script", {"file_path": str(moved)})
+        try:
+            assert readded["source_path"] == str(moved)
+            run = ghidra_server.ok("run_script", {"program": prog, "filename": filename})
+            assert run["source_path"] == str(moved)
+            assert run["source_state"] == "current"
+        finally:
+            ghidra_server.call("delete_script", {"filename": filename})
+
     def test_run_script_rejects_path_like_filename(
             self, ghidra_server: GhidraClient, prog: str):
         assert ghidra_server.is_error(

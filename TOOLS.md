@@ -165,7 +165,7 @@ Search for defined strings across the program listing.
 
 ### `add_script`
 
-Copy an existing script file into the Ghidra user script directory, making it available to run_script. This takes a snapshot: later edits to the source file are NOT picked up — call add_script again after every edit.
+Copy an existing script file into the Ghidra user script directory, making it available to run_script. The source path is remembered, so later edits to that file ARE picked up: every run_script re-copies it if the contents have changed and reports which source it ran via 'source_path' and 'source_state'. Call add_script again only to point the same filename at a different source file.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|:--------:|---------|-------------|
@@ -318,7 +318,7 @@ Delete a script from the Ghidra user script directory.
 
 ### `run_script`
 
-Run a Ghidra script against an open program. Searches the user script directory and all extension script directories. Omitting 'args' passes an empty argument list; by convention the bundled scripts treat that as a request for their built-in help and print their argument list instead of running. That is a script-authoring convention, not server behaviour — a script that genuinely takes no arguments should just run. Use get_script_description for a script's header documentation either way. Ghidra runs the script inside a transaction it opens around run(), so a script must NOT open its own outer transaction. An operation that manages its own transaction (Program.setLanguage is the usual one) must be wrapped in end(true) before and start() after, or it throws; returning from run() with an extra transaction still open is an error and the program is evicted and reopened.
+Run a Ghidra script against an open program. Searches the user script directory and all extension script directories. Omitting 'args' passes an empty argument list; by convention the bundled scripts treat that as a request for their built-in help and print their argument list instead of running. That is a script-authoring convention, not server behaviour — a script that genuinely takes no arguments should just run. Use get_script_description for a script's header documentation either way. Ghidra runs the script inside a transaction it opens around run(), so a script must NOT open its own outer transaction. An operation that manages its own transaction (Program.setLanguage is the usual one) must be wrapped in end(true) before and start() after, or it throws; returning from run() with an extra transaction still open is an error and the program is evicted and reopened. For a script added via add_script, the registered source file is re-copied first if it has changed, so an edit needs no second add_script — 'source_state' says which copy actually ran.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|:--------:|---------|-------------|

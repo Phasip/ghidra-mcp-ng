@@ -616,10 +616,9 @@ Points worth keeping:
   so the generator picks them up (1000 `search_functions`/`search_defined_strings`, 500
   `search_data_types`, 2000 the byte/instruction/constant searches and `get_disassembly`, 5000
   `list_globals` and the xref tools).
-- `add_script` **snapshots** the file — its summary now says so and tells the caller to re-add
-  after every edit. The better fix (issue #12) is still open: have `run_script` compare mtime/hash
-  against the registered source and re-copy or warn, since the current failure mode is a plausible
-  success response running old code.
+- ~~`add_script` **snapshots** the file~~ — **done 2026-08-09** (issue #12). `add_script` now records
+  the source path in a sidecar next to the copy, and `run_script` re-copies whenever the source's
+  contents differ. An edit needs no second `add_script`. See below.
 - Fix `projects/<project-c>/.claude/skills/ghidra-<project-c>/SKILL.md:31` — 5 positionals, missing the empty
   vmargs slot. (Outside this repo.)
 
@@ -660,6 +659,50 @@ affected; `bridge.py` resolves item `$ref`s and passed the nested shape through 
   as long as its author does not copy the convention. Said so in the `run_script` and
   `get_script_description` summaries, which is what `TOOLS.md` is generated from.
 
+### 5.5 `add_script` staleness — **DONE 2026-08-09**
+
+Issue #12, the last in-repo item. `add_script` copied the file into Ghidra's user script directory
+and forgot where it came from, so an edited script ran its old snapshot and returned
+`{"ok": true, "success": true}` — a response indistinguishable from a correct run. Documenting the
+snapshot (§5.3) made it predictable but left the trap in place.
+
+`add_script` now writes a sidecar next to the copy (`<filename>.mcp-source`, holding the absolute
+source path) and `run_script` reconciles the two before running. `delete_script` removes it.
+
+Decisions worth keeping:
+
+- **Re-copy, don't reject.** Design principle 3 says reject rather than guess, but a stale copy is
+  not invalid input — the filename is valid and unambiguous. `add_script` names a source file, and
+  the copy is an implementation detail of getting it where Ghidra can compile it, so "run the
+  current contents of the file you registered" is the tool's meaning, not a guess about it.
+  Rejecting would also mean the agent's only recovery is to call `add_script` again with the same
+  argument, which is a round-trip that carries no information.
+- **The response says which copy ran**, because a silent refresh would swap one invisible behaviour
+  for another. `source_state` is one of `current` / `refreshed` / `source_missing` /
+  `no_registered_source`, alongside `source_path`. `source_missing` is deliberately not an error —
+  the last registered copy is still the best available, and adding from a temp file that is later
+  cleaned up is a normal workflow — but it must not report as `current`.
+- **Comparison is by content, not mtime.** The file is a few KB, and mtime is the field most likely
+  to differ for reasons unrelated to the script changing (a copy, a checkout, a clock skew).
+- The sidecar suffix matches no `GhidraScriptProvider` extension, so `list_scripts`
+  (`isSupportedScriptName`) and Ghidra's own scanner both ignore it without a special case.
+- **Ghidra does recompile after the re-copy** — the one real risk in the design, since a cached
+  compiled class would have made the whole thing a no-op. `Files.copy` bumps the mtime and
+  `GhidraSourceBundle` picks it up. Proved by the test asserting the new sentinel appears in the
+  output *and* the old one does not.
+- One adjacent trap fixed while here: `add_script` now **rejects a filename that collides with a
+  bundled script**. `resolveScript` prefers the extension's own directory, so the copy would have
+  succeeded and then never been what `run_script` ran — the same "plausible success, different
+  code" failure this section is about.
+
+Covered by five cases in `tests/test_integration.py::TestScript`: the edit round-trip (before →
+`current`, edit → `refreshed` with new output, again → `current`), a deleted source, a bundled
+script reporting `no_registered_source`, the bundled-name rejection, and delete-then-re-add from a
+new path. All five verified to fail against the previous `ScriptTool`.
+
+Note `source_path` is **absent**, not null, when there is no registered source: `GsonProvider` omits
+nulls API-wide, and `source_state` already carries the whole answer.
+
 ---
 
 ## 6. Suggested order of work
@@ -692,10 +735,9 @@ Each step is independently shippable.
   `setLanguage`-style operation.
 - ~~**§5.1 leftover** — silent truncation~~ — **done 2026-08-09.** Seven tools, four of which had no
   flag and three of which had a false-positive one; see §5.1.
-- **§5.3 leftover** — `add_script` still snapshots, and `run_script` still cannot tell that the
-  registered copy has gone stale. The snapshot is now documented (a plausible success response
-  running old code is at least predictable), but comparing mtime/hash and re-copying or warning is
-  the real fix (issue #12).
+- ~~**§5.3 leftover** — `add_script` snapshots and `run_script` runs the stale copy~~ — **done
+  2026-08-09** as §5.5: the source path is registered and re-copied on change, and the run reports
+  which copy it ran.
 - **Outside this repo** — `projects/<project-c>/.claude/skills/ghidra-<project-c>/SKILL.md:31` (5 positionals,
   missing the empty vmargs slot), and the three `~/SKILLS/*.md` files referencing the long-gone
   `search_memory_strings` / `analyze_function_complete`.
