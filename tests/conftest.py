@@ -110,17 +110,23 @@ def _install_extension() -> None:
 class GhidraClient:
     """Thin HTTP wrapper for the ghidra-mcp-ng REST API."""
 
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, binary_path: str | None = None) -> None:
         self.base_url = base_url.rstrip("/")
+        # The compiled fixture binary on disk. Tests that exercise import_binary need a real
+        # file to import, and this is the one the session already knows how to build.
+        self.binary_path = binary_path
         self._schema_cache: dict[str, dict] | None = None
 
     def health(self) -> dict:
         with urllib.request.urlopen(f"{self.base_url}/health", timeout=5) as r:
             return json.loads(r.read())
 
-    def tools(self) -> list:
+    def schema(self) -> dict:
         with urllib.request.urlopen(f"{self.base_url}/schema", timeout=10) as r:
-            spec = json.loads(r.read())
+            return json.loads(r.read())
+
+    def tools(self) -> list:
+        spec = self.schema()
         tools = []
         for path, operations in spec.get("paths", {}).items():
             if not path.startswith("/tool/"):
@@ -268,7 +274,7 @@ def ghidra_server() -> Generator[GhidraClient, None, None]:
         )
 
         # 5. Wait up to 90 s for /health to respond
-        client = GhidraClient(f"http://127.0.0.1:{TEST_PORT}")
+        client = GhidraClient(f"http://127.0.0.1:{TEST_PORT}", binary_path=str(binary))
         deadline = time.monotonic() + 90
         healthy = False
         while time.monotonic() < deadline:

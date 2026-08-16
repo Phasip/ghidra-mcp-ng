@@ -1,40 +1,21 @@
 """
 test_integration.py — integration tests for ghidra-mcp-ng HTTP API.
 
-Covers all 43 registered tools.  Requires a running Ghidra server started by
+Covers every registered tool.  Requires a running Ghidra server started by
 the ``ghidra_server`` session fixture in conftest.py (self-contained: compiles
 a C binary, creates a Ghidra project, starts the server on port 8199).
 
 Tests are automatically skipped when GHIDRA_HOME is not available.
 
-Tool coverage
---------------
-ReadTools (25):
-  check_connection, list_project_files, list_exports, list_imports,
-    list_data_type_categories, get_program_info, list_globals,
-    get_function_info, get_address_info,
-  get_calling_conventions, get_function_variables,
-    decompile_function, read_data, get_disassembly,
-    search_functions, search_data_types,
-    search_bytes, search_instructions,
-  search_defined_strings, get_struct_layout,
-    get_xrefs_to, get_xrefs_from, get_function_callees, search_constant_references,
-    batch_tool_call
-
-WriteTools (13):
-  rename_function, rename_variable, rename_global, create_label,
-  set_function_prototype, set_parameter_type, create_struct, add_struct_field,
-  remove_struct_field, replace_struct_field, set_comment,
-  analyze_program, import_binary
-
-ScriptTool (5):
-  list_scripts, get_script_description, add_script, run_script, delete_script
+``TestHealth.test_tools_list_contains_expected_tools`` holds the authoritative
+list of tools that must exist; the served ``/schema`` is what it checks against.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
 from uuid import uuid4
 
@@ -89,7 +70,7 @@ class TestHealth:
         tools = ghidra_server.tools()
         names = {t["name"] for t in tools}
         expected = {
-            # ReadTools (25)
+            # ReadTools
             "check_connection", "list_project_files",
             "list_exports", "list_imports", "list_data_type_categories",
             "get_program_info", "list_globals",
@@ -99,17 +80,36 @@ class TestHealth:
             "search_data_types", "search_defined_strings", "get_struct_layout",
             "get_xrefs_to", "get_xrefs_from", "get_function_callees",
             "search_constant_references", "batch_tool_call",
-            # WriteTools (13)
+            # WriteTools
             "rename_function", "rename_variable", "rename_global", "create_label",
             "set_function_prototype", "set_parameter_type",
             "create_struct", "add_struct_field", "remove_struct_field", "replace_struct_field",
             "set_comment", "analyze_program", "import_binary",
-            # ScriptTool (5)
+            # ScriptTool
             "list_scripts", "get_script_description", "add_script", "run_script", "delete_script",
         }
         missing = expected - names
         assert not missing, f"Missing tools: {missing}"
         assert "run_script_inline" not in names
+
+    def test_every_tool_carries_exactly_one_category_tag(self, ghidra_server: GhidraClient):
+        # The tag is what bridge.py groups by for list_tools and what TOOLS.md sections
+        # on. An untagged tool still works but is only findable in an "Other" bucket,
+        # so catch it here rather than letting it quietly land there.
+        spec = ghidra_server.schema()
+        untagged = []
+        multi = []
+        for path, methods in spec["paths"].items():
+            for method, op in methods.items():
+                if "operationId" not in op:
+                    continue
+                tags = op.get("tags") or []
+                if not tags:
+                    untagged.append(op["operationId"])
+                elif len(tags) > 1:
+                    multi.append(op["operationId"])
+        assert not untagged, f"Tools missing a `tags` category: {sorted(untagged)}"
+        assert not multi, f"Tools with more than one tag: {sorted(multi)}"
 
 
 # ---------------------------------------------------------------------------
@@ -731,7 +731,7 @@ class TestWriteOperations:
         # A name that exists nowhere must be reported as not found — not misattributed
         # to a decompiler temporary.
         assert "not found" in error.lower()
-        assert "decompiler-derived" not in error
+        assert "decompiler temporary" not in error
 
     def test_rename_decompiler_temporary_explains_why(
             self, ghidra_server: GhidraClient, prog: str):
@@ -772,7 +772,8 @@ class TestWriteOperations:
         )
         assert resp["ok"] is False
         error = resp.get("error", "")
-        assert "decompiler-derived" in error
+        assert "decompiler temporary" in error
+        assert "get_function_variables" in error
         assert found_temp in error
 
     def test_set_function_prototype(
@@ -1629,3 +1630,46 @@ class TestAddressStrictness:
         resp = ghidra_server.call("get_address_info", {"program": prog, "address": address})
         assert resp["ok"] is False
         assert "0x" in resp["error"]
+
+
+class TestImportLeavesProgramWritable:
+    """
+    An imported program must be writable afterwards.
+
+    Regression test. GhidraProject opens a transaction on every program it manages
+    (initializeProgram -> startTransaction("Batch Processing")) and saveAs() ends that
+    transaction only to open a fresh one in its finally block. importBinary used to return
+    without closing the program, so that transaction stayed open forever — and an open
+    transaction makes DomainObjectAdapterDB.save() throw "Unable to lock due to active
+    transaction". The symptom was silent and expensive: the import reported success, later
+    writes applied in memory and read back correctly, but every save failed, and restarting
+    the server to clear the lock discarded the import along with all the edits.
+
+    The fix is ghidraProject.close(imported) after saveAs, which ends the transaction and
+    releases GhidraProject's consumer reference.
+    """
+
+    def test_write_after_import_saves(self, ghidra_server: GhidraClient, tmp_path_factory):
+        # Import a second copy of the fixture binary under its own name.
+        src = Path(ghidra_server.binary_path)
+        staged = tmp_path_factory.mktemp("reimport") / "import_writable"
+        shutil.copy(src, staged)
+
+        imported = ghidra_server.ok("import_binary", {"file_path": str(staged)})
+        assert imported["success"] is True
+        program = "/" + imported["program"]
+
+        # The write must SUCCEED, not merely apply in memory. Before the fix this returned
+        # ok:false with "Unable to lock due to active transaction" while the rename was
+        # nonetheless visible to search_functions — so assert on the write's own result.
+        renamed = ghidra_server.ok(
+            "rename_function",
+            {"program": program, "name_or_address": "multiply", "new_name": "multiply_after_import"},
+        )
+        assert renamed["success"] is True
+
+        # And it must be durable: a fresh read of the program still sees the new name.
+        found = ghidra_server.ok(
+            "search_functions", {"program": program, "query": "multiply_after_import"})
+        names = [f["name"] for f in (found if isinstance(found, list) else found.get("functions", []))]
+        assert "multiply_after_import" in names

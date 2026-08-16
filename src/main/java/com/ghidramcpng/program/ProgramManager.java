@@ -207,7 +207,26 @@ public class ProgramManager {
 
         // importProgram() returns a proxy file with no saved location; saveAs establishes one.
         ghidraProject.saveAs(imported, folderPath, imported.getName(), true);
-        return imported.getName();
+        String importedName = imported.getName();
+
+        // Hand the program back to nobody: GhidraProject must not keep holding it.
+        //
+        // GhidraProject opens a transaction on every program it manages — initializeProgram()
+        // does program.startTransaction("Batch Processing") and parks the id in its own
+        // openPrograms map — and saveAs() ends that transaction only to open a fresh one in its
+        // finally block. Nothing but close() ever ends the last one. An open transaction makes
+        // DomainObjectAdapterDB.save() fail with "Unable to lock due to active transaction", so
+        // leaving it open wedged the program permanently: the import itself reported success,
+        // every later write tool applied in memory and then failed to save, and restarting the
+        // server to clear it discarded the import along with the edits.
+        //
+        // close() ends that transaction and releases GhidraProject's consumer reference, which
+        // GhidraProject.importProgram's own javadoc makes the caller's responsibility — so this
+        // also fixes a leaked reference that kept every imported program open for the life of
+        // the server. Callers reach the program through getOrOpen(), which opens it from the
+        // DomainFile with this manager's consumer.
+        ghidraProject.close(imported);
+        return importedName;
     }
 
     /**
