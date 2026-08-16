@@ -33,6 +33,7 @@ _MINIMAL_SPEC: dict = {
         "/check_connection": {
             "get": {
                 "operationId": "check_connection",
+                "tags": ["Program"],
                 "summary": "Check server connectivity",
                 "parameters": [],
             }
@@ -40,6 +41,7 @@ _MINIMAL_SPEC: dict = {
         "/search_functions": {
             "get": {
                 "operationId": "search_functions",
+                "tags": ["Functions"],
                 "summary": "Search functions by name",
                 "parameters": [
                     {
@@ -68,6 +70,7 @@ _MINIMAL_SPEC: dict = {
         "/rename_function": {
             "post": {
                 "operationId": "rename_function",
+                "tags": ["Annotation"],
                 "summary": "Rename a function",
                 "requestBody": {
                     "required": True,
@@ -199,25 +202,43 @@ class TestInputSchema:
 # _openapi_to_mcp_tools
 # ---------------------------------------------------------------------------
 
+_META = {"list_tools", "describe_tool", "call_tool"}
+
+
 class TestOpenApiToMcpTools:
-    def test_produces_one_tool_per_operation(self):
+    def test_lists_hot_core_operations(self):
         tools = bridge._openapi_to_mcp_tools(_MINIMAL_SPEC)
         names = [t["name"] for t in tools]
-        assert "check_connection" in names
         assert "search_functions" in names
         assert "rename_function" in names
 
-    def test_tools_are_sorted_by_name(self):
+    def test_omits_operations_outside_the_hot_core(self):
         tools = bridge._openapi_to_mcp_tools(_MINIMAL_SPEC)
-        names = [t["name"] for t in tools]
+        assert "check_connection" not in [t["name"] for t in tools]
+
+    def test_always_offers_the_discovery_tools(self):
+        tools = bridge._openapi_to_mcp_tools(_MINIMAL_SPEC)
+        assert _META.issubset({t["name"] for t in tools})
+
+    def test_discovery_tools_come_last(self):
+        names = [t["name"] for t in bridge._openapi_to_mcp_tools(_MINIMAL_SPEC)]
+        assert names[-3:] == ["list_tools", "describe_tool", "call_tool"]
+
+    def test_hot_core_is_sorted_by_name(self):
+        names = [t["name"] for t in bridge._openapi_to_mcp_tools(_MINIMAL_SPEC)
+                 if t["name"] not in _META]
         assert names == sorted(names)
 
     def test_tool_has_required_mcp_fields(self):
         tools = bridge._openapi_to_mcp_tools(_MINIMAL_SPEC)
-        tool = next(t for t in tools if t["name"] == "check_connection")
-        assert tool["description"] == "Check server connectivity"
-        assert "inputSchema" in tool
+        tool = next(t for t in tools if t["name"] == "search_functions")
+        assert tool["description"] == "Search functions by name"
         assert tool["inputSchema"]["type"] == "object"
+
+    def test_list_tools_advertises_the_categories(self):
+        tools = bridge._openapi_to_mcp_tools(_MINIMAL_SPEC)
+        desc = next(t for t in tools if t["name"] == "list_tools")["description"]
+        assert "Annotation" in desc and "Functions" in desc and "Program" in desc
 
     def test_operation_without_operationId_is_skipped(self):
         spec = {
@@ -226,9 +247,8 @@ class TestOpenApiToMcpTools:
                 "/with-id": {"get": {"operationId": "has_id", "summary": "Has id"}},
             }
         }
-        tools = bridge._openapi_to_mcp_tools(spec)
-        assert len(tools) == 1
-        assert tools[0]["name"] == "has_id"
+        assert "has_id" in bridge._index(spec)
+        assert len(bridge._index(spec)) == 1
 
     def test_non_get_post_methods_are_skipped(self):
         spec = {
@@ -240,13 +260,84 @@ class TestOpenApiToMcpTools:
                 }
             }
         }
-        tools = bridge._openapi_to_mcp_tools(spec)
-        assert len(tools) == 1
-        assert tools[0]["name"] == "get_res"
+        assert list(bridge._index(spec)) == ["get_res"]
 
-    def test_empty_spec_returns_empty_list(self):
-        assert bridge._openapi_to_mcp_tools({}) == []
-        assert bridge._openapi_to_mcp_tools({"paths": {}}) == []
+    def test_empty_spec_still_offers_discovery_tools(self):
+        for spec in ({}, {"paths": {}}):
+            assert {t["name"] for t in bridge._openapi_to_mcp_tools(spec)} == _META
+
+
+# ---------------------------------------------------------------------------
+# Discovery tools
+# ---------------------------------------------------------------------------
+
+class TestDiscoveryTools:
+    def _call(self, name, arguments):
+        return bridge._dispatch(_MINIMAL_SPEC, "http://host", name, arguments)
+
+    def test_list_tools_groups_every_operation_by_category(self):
+        result = self._call("list_tools", {})
+        assert result["categories"] == {
+            "Annotation": ["rename_function"],
+            "Functions": ["search_functions"],
+            "Program": ["check_connection"],
+        }
+
+    def test_list_tools_by_category_carries_summaries(self):
+        result = self._call("list_tools", {"category": "Program"})
+        assert result["tools"] == [
+            {"name": "check_connection", "summary": "Check server connectivity"}
+        ]
+
+    def test_untagged_operation_falls_back_to_other(self):
+        spec = {"paths": {"/x": {"get": {"operationId": "x_tool", "summary": "X"}}}}
+        result = bridge._dispatch(spec, "http://host", "list_tools", {})
+        assert result["categories"] == {bridge.UNCATEGORIZED: ["x_tool"]}
+
+    def test_unknown_category_is_rejected_with_the_valid_ones(self):
+        with pytest.raises(ValueError, match="Unknown category"):
+            self._call("list_tools", {"category": "Nonsense"})
+
+    def test_describe_tool_returns_the_full_schema(self):
+        result = self._call("describe_tool", {"name": "search_functions"})
+        assert result["category"] == "Functions"
+        assert result["description"] == "Search functions by name"
+        assert "program" in result["inputSchema"]["properties"]
+        assert result["inputSchema"]["required"] == ["program"]
+
+    def test_describe_tool_reaches_operations_outside_the_hot_core(self):
+        assert self._call("describe_tool", {"name": "check_connection"})["name"] \
+            == "check_connection"
+
+    def test_describe_tool_requires_a_name(self):
+        with pytest.raises(ValueError, match="Required parameter 'name' is missing"):
+            self._call("describe_tool", {})
+
+    def test_describe_tool_suggests_the_nearest_name(self):
+        with pytest.raises(ValueError, match="Did you mean 'search_functions'"):
+            self._call("describe_tool", {"name": "search_function"})
+
+    def test_call_tool_runs_an_operation_outside_the_hot_core(self):
+        with patch.object(bridge, "_get", return_value={"status": "ok"}) as mock_get:
+            result = self._call("call_tool", {"name": "check_connection"})
+        mock_get.assert_called_once_with("http://host/check_connection")
+        assert result == {"status": "ok"}
+
+    def test_call_tool_forwards_arguments(self):
+        with patch.object(bridge, "_post", return_value={"success": True}) as mock_post:
+            self._call("call_tool", {
+                "name": "rename_function",
+                "arguments": {"program": "p", "name_or_address": "f", "new_name": "g"},
+            })
+        assert mock_post.call_args[0][1]["new_name"] == "g"
+
+    def test_call_tool_requires_a_name(self):
+        with pytest.raises(ValueError, match="Required parameter 'name' is missing"):
+            self._call("call_tool", {})
+
+    def test_call_tool_refuses_to_nest_a_discovery_tool(self):
+        with pytest.raises(ValueError, match="it is a discovery tool"):
+            self._call("call_tool", {"name": "list_tools"})
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +376,28 @@ class TestDispatch:
     def test_unknown_tool_raises_value_error(self):
         with pytest.raises(ValueError, match="Unknown tool"):
             bridge._dispatch(_MINIMAL_SPEC, "http://host", "nonexistent_tool", {})
+
+    def test_unknown_tool_suggests_the_nearest_name(self):
+        with pytest.raises(ValueError, match="Did you mean 'rename_function'"):
+            bridge._dispatch(_MINIMAL_SPEC, "http://host", "rename_funtcion", {})
+
+    def test_list_valued_arg_becomes_repeated_query_params(self):
+        spec = {
+            "paths": {
+                "/get_xrefs_to": {
+                    "get": {
+                        "operationId": "get_xrefs_to",
+                        "tags": ["Cross-references"],
+                        "summary": "Xrefs to",
+                        "parameters": [],
+                    }
+                }
+            }
+        }
+        with patch.object(bridge, "_get", return_value=[]) as mock_get:
+            bridge._dispatch(spec, "http://host", "get_xrefs_to",
+                             {"ref_types": ["CALL", "READ"]})
+        assert "ref_types=CALL&ref_types=READ" in mock_get.call_args[0][0]
 
 
 # ---------------------------------------------------------------------------
@@ -353,14 +466,16 @@ class TestMainLoopInitialize:
 
 
 class TestMainLoopToolsList:
-    def test_tools_list_returns_all_tools(self):
+    def test_tools_list_returns_hot_core_and_discovery_tools(self):
         responses = _run_main_with_inputs(
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
         )
         tools = responses[0]["result"]["tools"]
         names = [t["name"] for t in tools]
-        assert "check_connection" in names
         assert "rename_function" in names
+        assert _META.issubset(set(names))
+        # check_connection is reachable only through the discovery tools
+        assert "check_connection" not in names
 
     def test_tools_list_error_on_connection_refused(self):
         err = urllib.error.URLError("Connection refused")

@@ -212,6 +212,33 @@ See **[TOOLS.md](TOOLS.md)** for the full, up-to-date tool reference with parame
 make tools-docs
 ```
 
+### How the tool surface is exposed
+
+The MCP client is not handed every tool at once. Listing a tool costs its full JSON schema in
+every session whether or not it is ever called, so `bridge.py` lists only the tools a session
+uses constantly — orientation, function lookup, decompilation, disassembly, xrefs, renaming,
+comments, scripts — plus three discovery tools:
+
+| Tool | Purpose |
+|---|---|
+| `list_tools` | Browse the rest, grouped by category (`Annotation`, `Code`, `Cross-references`, `Data types`, `Functions`, `Program`, `Scripting`, `Symbols and memory`) |
+| `describe_tool` | Fetch one tool's full parameter schema on demand |
+| `call_tool` | Run any tool by name, listed or not |
+
+Everything remains reachable — an unlisted tool is one `call_tool` away, and the direct HTTP
+API is unaffected. Categories come from the `tags` field on each tool's `@Operation`
+annotation, which is also what groups `TOOLS.md`. To change what is listed up front, edit
+`HOT_CORE` in `bridge.py`.
+
+### Specialized analyses are scripts, not tools
+
+The tool surface holds general primitives only — functions, addresses, symbols, types, memory.
+Anything tied to one executable format, toolchain or analysis recipe ships as a `GhidraScript`
+in `ghidra_scripts/` (PE parsing, vtable recovery, signature propagation, program and function
+audits) and is reached with `list_scripts` → `get_script_description` → `run_script`. This
+keeps narrow capabilities out of every session's context while leaving them one call away, and
+`add_script` lets you add your own the same way.
+
 ### Addressing functions
 
 All tools that accept `name_or_address` follow two strict rules:

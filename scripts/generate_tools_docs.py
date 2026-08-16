@@ -9,26 +9,16 @@ Requires a running Ghidra MCP server (start.py) to fetch /openapi.json.
 """
 import argparse
 import json
-import re
 import sys
 import urllib.request
 from typing import Any
 
 # ---------------------------------------------------------------------------
-# Category definitions — operation IDs are matched against these patterns in
-# order; first match wins.  Operations with no match go to "Other".
+# A tool's category is the first `tags` entry on its @Operation annotation, so it
+# lives next to the tool it describes and cannot drift as tools are added or
+# renamed.  bridge.py reads the same tag to group tools for its discovery layer.
 # ---------------------------------------------------------------------------
-CATEGORIES: list[tuple[str, re.Pattern]] = [
-    ("Infrastructure",    re.compile(r"^(check_connection|list_project_files)$")),
-    ("Functions",         re.compile(r"^(search_functions|get_function_info|get_calling_conventions|get_function_variables|get_function_callers|get_function_callees)$")),
-    ("Decompilation",     re.compile(r"^decompile_function$")),
-    ("Symbols",           re.compile(r"^(list_exports|list_imports)$")),
-    ("Cross-references",  re.compile(r"^get_(xrefs|function_xrefs)")),
-    ("Data types",        re.compile(r"^(search_data_types|list_data_type_categories|get_struct_layout)$")),
-    ("Strings",           re.compile(r"^search_(defined|memory)_strings$")),
-    ("Write operations",  re.compile(r"^(import_binary|rename_|set_|create_|add_|remove_|replace_)")),
-    ("Scripting",         re.compile(r"^(list|add|run|delete)_script$")),
-]
+UNCATEGORIZED = "Other"
 
 
 def _resolve_ref(spec: dict, ref: str) -> dict:
@@ -59,11 +49,9 @@ def _schema_type(spec: dict, schema: dict) -> str:
     return t or "any"
 
 
-def _categorize(op_id: str) -> str:
-    for name, pattern in CATEGORIES:
-        if pattern.search(op_id):
-            return name
-    return "Other"
+def _categorize(op: dict) -> str:
+    tags = op.get("tags") or []
+    return tags[0] if tags else UNCATEGORIZED
 
 
 def _collect_operations(spec: dict) -> list[dict]:
@@ -122,7 +110,7 @@ def _collect_operations(spec: dict) -> list[dict]:
                 "method": method.upper(),
                 "path": path,
                 "summary": summary,
-                "category": _categorize(op_id),
+                "category": _categorize(op),
                 "params": params or body_fields,
             })
     ops.sort(key=lambda o: (o["category"], o["op_id"]))
@@ -147,20 +135,15 @@ def _param_table(params: list[dict]) -> str:
 def generate(spec: dict) -> str:
     ops = _collect_operations(spec)
 
-    # Group by category preserving insertion order of CATEGORIES
-    ordered_categories: list[str] = []
     by_cat: dict[str, list[dict]] = {}
     for op in ops:
-        cat = op["category"]
-        if cat not in by_cat:
-            ordered_categories.append(cat)
-            by_cat[cat] = []
-        by_cat[cat].append(op)
+        by_cat.setdefault(op["category"], []).append(op)
 
-    # Reorder so predefined categories come first
-    predefined = [c for c, _ in CATEGORIES]
-    final_order = [c for c in predefined if c in by_cat]
-    final_order += [c for c in ordered_categories if c not in predefined]
+    # Alphabetical, except that uncategorized tools sort last so a missing tag is
+    # visible at the bottom of the page rather than hidden mid-document.
+    final_order = sorted(c for c in by_cat if c != UNCATEGORIZED)
+    if UNCATEGORIZED in by_cat:
+        final_order.append(UNCATEGORIZED)
 
     lines = [
         "# Tools reference",

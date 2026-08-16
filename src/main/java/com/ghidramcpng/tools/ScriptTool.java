@@ -76,6 +76,7 @@ public class ScriptTool {
     @GET
     @Path("/list_scripts")
     @Operation(
+            tags = "Scripting",
             operationId = "list_scripts",
             summary = "List available Ghidra scripts. Use mcp_scripts_only=true to list only " +
                       "scripts bundled with this extension (in its ghidra_scripts/ directory, " +
@@ -116,6 +117,7 @@ public class ScriptTool {
     @GET
     @Path("/get_script_description")
     @Operation(
+            tags = "Scripting",
             operationId = "get_script_description",
             summary = "Get metadata and description for a script — equivalent to clicking a script in Ghidra's Script Manager. " +
                       "The bundled scripts also print their argument list when run_script is called with no args."
@@ -145,11 +147,15 @@ public class ScriptTool {
     @POST
     @Path("/add_script")
     @Operation(
+            tags = "Scripting",
             operationId = "add_script",
-            summary = "Copy an existing script file into the Ghidra user script directory, making it available to run_script. "
-                    + "The source path is remembered, so later edits to that file ARE picked up: every run_script re-copies it "
-                    + "if the contents have changed and reports which source it ran via 'source_path' and 'source_state'. "
-                    + "Call add_script again only to point the same filename at a different source file."
+            summary = "Copy a script file into the Ghidra user script directory so run_script can run it. "
+                    + "The source path is remembered and re-copied when it changes, so later edits are picked "
+                    + "up without calling add_script again — call it again only to point the same filename at a "
+                    + "different source. Writing a script: Ghidra already runs it in a transaction, so do not "
+                    + "open an outer one, and do not return from run() with an extra transaction open (that is "
+                    + "an error, and the program is evicted and reopened). Anything managing its own transaction "
+                    + "— Program.setLanguage is the usual case — needs end(true) before it and start() after."
     )
     @ApiResponse(responseCode = "200", description = "Script add result",
             content = @Content(schema = @Schema(implementation = AddScriptResponse.class)))
@@ -194,17 +200,12 @@ public class ScriptTool {
     @POST
     @Path("/run_script")
     @Operation(
+            tags = "Scripting",
             operationId = "run_script",
-            summary = "Run a Ghidra script against an open program. Searches the user script directory and all extension script directories. " +
-                      "Omitting 'args' passes an empty argument list; by convention the bundled scripts treat that as a request for their built-in help "
-                      + "and print their argument list instead of running. That is a script-authoring convention, not server behaviour — a script that "
-                      + "genuinely takes no arguments should just run. Use get_script_description for a script's header documentation either way. "
-                      + "Ghidra runs the script inside a transaction it opens around run(), so a script must NOT open its own outer transaction. "
-                      + "An operation that manages its own transaction (Program.setLanguage is the usual one) must be wrapped in end(true) before "
-                      + "and start() after, or it throws; returning from run() with an extra transaction still open is an error and the program is "
-                      + "evicted and reopened. "
-                      + "For a script added via add_script, the registered source file is re-copied first if it has changed, so an edit needs no "
-                      + "second add_script — 'source_state' says which copy actually ran."
+            summary = "Run a Ghidra script by filename, from the user or extension script directories. "
+                      + "Omitting 'args' makes the bundled scripts print their own usage instead of running; "
+                      + "see get_script_description. An add_script'd script is re-copied from its source if "
+                      + "that changed, so edits need no second add_script."
     )
     @ApiResponse(responseCode = "200", description = "Script execution result",
             content = @Content(schema = @Schema(implementation = RunScriptResponse.class)))
@@ -228,6 +229,7 @@ public class ScriptTool {
     @POST
     @Path("/delete_script")
     @Operation(
+            tags = "Scripting",
             operationId = "delete_script",
             summary = "Delete a script from the Ghidra user script directory."
     )
@@ -531,11 +533,11 @@ public class ScriptTool {
     }
 
     public record RunScriptRequest(
-            @Schema(description = "Program name to bind as the current program", requiredMode = Schema.RequiredMode.REQUIRED)
+            @Schema(description = "Program name; see list_project_files.", requiredMode = Schema.RequiredMode.REQUIRED)
             String program,
-            @Schema(description = "Script filename returned by list_scripts", requiredMode = Schema.RequiredMode.REQUIRED)
+            @Schema(description = "Script filename; see list_scripts.", requiredMode = Schema.RequiredMode.REQUIRED)
             String filename,
-            @Schema(description = "Optional arguments passed to the script via getScriptArgs(). Omit to trigger the script's built-in help output.")
+            @Schema(description = "Arguments passed via getScriptArgs(). Omit to get the script's usage instead.")
             List<String> args) {
     }
 
@@ -555,7 +557,7 @@ public class ScriptTool {
     }
 
     public record DeleteScriptRequest(
-            @Schema(description = "Script filename returned by list_scripts", requiredMode = Schema.RequiredMode.REQUIRED)
+            @Schema(description = "Script filename; see list_scripts.", requiredMode = Schema.RequiredMode.REQUIRED)
             String filename) {
     }
 

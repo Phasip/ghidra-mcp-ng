@@ -99,7 +99,7 @@ public class ReadTools {
 
     @GET
     @Path("/check_connection")
-    @Operation(operationId = "check_connection", summary = "Check if the Ghidra MCP server is running and responsive.")
+    @Operation(tags = "Program", operationId = "check_connection", summary = "Check if the Ghidra MCP server is running and responsive.")
     @ApiResponse(responseCode = "200", description = "Connection status",
             content = @Content(schema = @Schema(implementation = CheckConnectionResponse.class)))
     public CheckConnectionResponse checkConnection() {
@@ -108,7 +108,7 @@ public class ReadTools {
 
     @GET
     @Path("/list_project_files")
-    @Operation(operationId = "list_project_files", summary = "List all program files in the Ghidra project.")
+    @Operation(tags = "Program", operationId = "list_project_files", summary = "List all program files in the Ghidra project.")
     @ApiResponse(responseCode = "200", description = "Project file list",
             content = @Content(schema = @Schema(implementation = ListProjectFilesResponse.class)))
     public ListProjectFilesResponse listProjectFiles() {
@@ -118,12 +118,12 @@ public class ReadTools {
 
     @GET
     @Path("/get_program_info")
-    @Operation(operationId = "get_program_info",
-            summary = "Get core program metadata including image base, executable format, language/compiler IDs, and memory blocks.")
+    @Operation(tags = "Program", operationId = "get_program_info",
+            summary = "Program metadata: image base, executable format, language/compiler IDs, memory blocks.")
     @ApiResponse(responseCode = "200", description = "Program metadata",
             content = @Content(schema = @Schema(implementation = GetProgramInfoResponse.class)))
     public GetProgramInfoResponse getProgramInfo(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to get valid values.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName) {
         Program program = openProgram(programName);
         List<ProgramMemoryBlock> blocks = new ArrayList<>();
@@ -153,12 +153,12 @@ public class ReadTools {
 
     @GET
     @Path("/list_globals")
-    @Operation(operationId = "list_globals",
+    @Operation(tags = "Symbols and memory", operationId = "list_globals",
             summary = "List named global symbols grouped by functions, data, and labels, with optional section and address-range filters.")
     @ApiResponse(responseCode = "200", description = "Global symbol listing",
             content = @Content(schema = @Schema(implementation = ListGlobalsResponse.class)))
     public ListGlobalsResponse listGlobals(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to get valid values.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName,
             @Parameter(description = "Optional memory block/section name filter, e.g. .data or .bss.")
             @QueryParam("section") String section,
@@ -166,7 +166,7 @@ public class ReadTools {
             @QueryParam("start_address") String startAddress,
             @Parameter(description = "Optional end address (inclusive) for symbol address filtering.")
             @QueryParam("end_address") String endAddress,
-            @Parameter(description = "Maximum number of symbols to return across all groups (max 5000). 'count' is the size of this page; 'truncated' is true when further matches were dropped.")
+            @Parameter(description = "Maximum number of symbols to return across all groups (max 5000). 'truncated' is true when matches were dropped.")
             @QueryParam("limit") @DefaultValue("500") int limit) {
         Program program = openProgram(programName);
         int validatedLimit = requireLimit(limit, 5000, "limit");
@@ -228,7 +228,7 @@ public class ReadTools {
 
     @POST
     @Path("/batch_tool_call")
-    @Operation(operationId = "batch_tool_call",
+    @Operation(tags = "Program", operationId = "batch_tool_call",
             summary = "Run one allowlisted read or write tool many times with different arguments, returning ordered per-call results. "
                     + "Prefer this over one call per item when renaming or commenting several things in a function.")
     @ApiResponse(responseCode = "200", description = "Batch tool call results",
@@ -362,11 +362,11 @@ public class ReadTools {
 
     @GET
     @Path("/list_exports")
-    @Operation(operationId = "list_exports", summary = "List all exported functions and symbols in a program. Returns all exports; no pagination.")
+    @Operation(tags = "Symbols and memory", operationId = "list_exports", summary = "List all exported functions and symbols in a program. Returns all exports; no pagination.")
     @ApiResponse(responseCode = "200", description = "Export list",
             content = @Content(schema = @Schema(implementation = ListExportsResponse.class)))
     public ListExportsResponse listExports(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to see available programs.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName) {
         Program program = openProgram(programName);
         List<ExportEntry> exports = new ArrayList<>();
@@ -384,11 +384,11 @@ public class ReadTools {
 
     @GET
     @Path("/list_imports")
-    @Operation(operationId = "list_imports", summary = "List all imported external symbols in a program. Returns all imports; no pagination.")
+    @Operation(tags = "Symbols and memory", operationId = "list_imports", summary = "List all imported external symbols in a program. Returns all imports; no pagination.")
     @ApiResponse(responseCode = "200", description = "Import list",
             content = @Content(schema = @Schema(implementation = ListImportsResponse.class)))
     public ListImportsResponse listImports(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to see available programs.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName) {
         Program program = openProgram(programName);
         List<ImportEntry> imports = new ArrayList<>();
@@ -404,11 +404,11 @@ public class ReadTools {
 
     @GET
     @Path("/list_data_type_categories")
-    @Operation(operationId = "list_data_type_categories", summary = "List all data type category paths in a program. Returns all categories; no pagination. Use search_data_types with a category path as the query to explore contents.")
+    @Operation(tags = "Data types", operationId = "list_data_type_categories", summary = "List all data type category paths in a program. Returns all categories; no pagination. Use search_data_types with a category path as the query to explore contents.")
     @ApiResponse(responseCode = "200", description = "Data type categories",
             content = @Content(schema = @Schema(implementation = ListDataTypeCategoriesResponse.class)))
     public ListDataTypeCategoriesResponse listDataTypeCategories(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to see available programs.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName) {
         Program program = openProgram(programName);
         List<String> categories = new ArrayList<>();
@@ -418,13 +418,13 @@ public class ReadTools {
 
     @GET
     @Path("/get_function_info")
-    @Operation(operationId = "get_function_info", summary = "Get full details for a single function: signature, calling convention, size, and thunk status. Use search_functions to find the name or address first.")
+    @Operation(tags = "Functions", operationId = "get_function_info", summary = "Full details for one function: signature, calling convention, size, thunk status.")
     @ApiResponse(responseCode = "200", description = "Full function details",
             content = @Content(schema = @Schema(implementation = FunctionEntry.class)))
     public FunctionEntry getFunctionInfo(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to get valid values.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName,
-            @Parameter(description = "Function name (case-sensitive) or 0x-prefixed hex entry-point address.", required = true)
+            @Parameter(description = "Function name (case-sensitive) or 0x-prefixed hex entry point.", required = true)
             @QueryParam("name_or_address") String nameOrAddress) {
         Program program = openProgram(programName);
         return FunctionEntry.from(findFunction(program, requireText(nameOrAddress, "name_or_address")));
@@ -432,13 +432,13 @@ public class ReadTools {
 
     @GET
     @Path("/get_address_info")
-    @Operation(operationId = "get_address_info",
+    @Operation(tags = "Symbols and memory", operationId = "get_address_info",
             summary = "Get detailed information about a specific address: the memory segment it belongs to, " +
                     "the function containing it (if any), and all cross-references pointing to it.")
     @ApiResponse(responseCode = "200", description = "Address information",
             content = @Content(schema = @Schema(implementation = GetAddressInfoResponse.class)))
     public GetAddressInfoResponse getAddressInfo(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to get valid values.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName,
             @Parameter(description = "Address in 0x-prefixed hex, e.g. 0x00401000.", required = true)
             @QueryParam("address") String addressText) {
@@ -465,12 +465,12 @@ public class ReadTools {
 
         @GET
         @Path("/read_data")
-        @Operation(operationId = "read_data",
+        @Operation(tags = "Symbols and memory", operationId = "read_data",
             summary = "Read raw memory bytes from an address as fixed-size items.")
         @ApiResponse(responseCode = "200", description = "Raw data read result",
             content = @Content(schema = @Schema(implementation = ReadDataResponse.class)))
         public ReadDataResponse readData(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to get valid values.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName,
             @Parameter(description = "Start address in 0x-prefixed hex, e.g. 0x00401000.", required = true)
             @QueryParam("address") String addressText,
@@ -521,16 +521,16 @@ public class ReadTools {
 
         @GET
         @Path("/get_disassembly")
-        @Operation(operationId = "get_disassembly",
-            summary = "Get disassembly lines starting at an address for a fixed number of instructions.")
+        @Operation(tags = "Code", operationId = "get_disassembly",
+            summary = "Disassemble a fixed number of instructions from an address.")
         @ApiResponse(responseCode = "200", description = "Disassembly result",
             content = @Content(schema = @Schema(implementation = GetDisassemblyResponse.class)))
         public GetDisassemblyResponse getDisassembly(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to get valid values.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName,
-            @Parameter(description = "Start location: a 0x-prefixed hex address (e.g. 0x00401000) or a symbol/function name (case-sensitive). A name resolves to that symbol's address.", required = true)
+            @Parameter(description = "0x-prefixed hex address, or a symbol name (case-sensitive) to start at its address.", required = true)
             @QueryParam("address") String addressText,
-            @Parameter(description = "Maximum number of instructions to return (max 2000). If more instructions follow the returned window, the response 'truncated' flag is true and 'next_address' points to the first instruction not returned.")
+            @Parameter(description = "Max instructions (max 2000); when more follow, 'truncated' is true and 'next_address' is the first not returned.")
             @QueryParam("limit") @DefaultValue("20") int limit) {
         Program program = openProgram(programName);
         // Accept either a 0x-prefixed address or a symbol/function name so this endpoint is
@@ -578,11 +578,11 @@ public class ReadTools {
 
     @GET
     @Path("/get_calling_conventions")
-    @Operation(operationId = "get_calling_conventions", summary = "List all calling conventions available in a program's compiler spec. Use this to find valid values for the calling_convention field when calling set_function_prototype.")
+    @Operation(tags = "Functions", operationId = "get_calling_conventions", summary = "List all calling conventions available in a program's compiler spec. Use this to find valid values for the calling_convention field when calling set_function_prototype.")
     @ApiResponse(responseCode = "200", description = "Calling convention list",
             content = @Content(schema = @Schema(implementation = GetCallingConventionsResponse.class)))
     public GetCallingConventionsResponse getCallingConventions(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to get valid values.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName) {
         Program program = openProgram(programName);
         List<String> conventions = new ArrayList<>();
@@ -598,13 +598,13 @@ public class ReadTools {
 
     @GET
     @Path("/get_function_variables")
-    @Operation(operationId = "get_function_variables", summary = "Get all parameters and local variables of a function.")
+    @Operation(tags = "Functions", operationId = "get_function_variables", summary = "Get all parameters and local variables of a function.")
     @ApiResponse(responseCode = "200", description = "Function variables",
             content = @Content(schema = @Schema(implementation = GetFunctionVariablesResponse.class)))
     public GetFunctionVariablesResponse getFunctionVariables(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to see available programs.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName,
-            @Parameter(description = "Function name (case-sensitive) or 0x-prefixed hex entry-point address.", required = true)
+            @Parameter(description = "Function name (case-sensitive) or 0x-prefixed hex entry point.", required = true)
             @QueryParam("name_or_address") String nameOrAddress) {
         Program program = openProgram(programName);
         Function function = findFunction(program, requireText(nameOrAddress, "name_or_address"));
@@ -627,15 +627,15 @@ public class ReadTools {
 
     @GET
     @Path("/decompile_function")
-    @Operation(operationId = "decompile_function", summary = "Decompile a function to C pseudocode.")
+    @Operation(tags = "Code", operationId = "decompile_function", summary = "Decompile a function to C pseudocode.")
     @ApiResponse(responseCode = "200", description = "Decompiled function",
             content = @Content(schema = @Schema(implementation = DecompileFunctionResponse.class)))
     public DecompileFunctionResponse decompileFunction(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to see available programs.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName,
-            @Parameter(description = "Function name (case-sensitive) or 0x-prefixed hex entry-point address.", required = true)
+            @Parameter(description = "Function name (case-sensitive) or 0x-prefixed hex entry point.", required = true)
             @QueryParam("name_or_address") String nameOrAddress,
-            @Parameter(description = "Optional override for decompile timeout in seconds. 0 means default.")
+            @Parameter(description = "Decompile timeout override in seconds; 0 uses the default.")
             @DefaultValue("0") @QueryParam("timeout_seconds") int timeoutSeconds) {
         Program program = openProgram(programName);
         Function function = findFunction(program, requireText(nameOrAddress, "name_or_address"));
@@ -659,19 +659,19 @@ public class ReadTools {
 
     @GET
     @Path("/search_functions")
-    @Operation(operationId = "search_functions", summary = "Search for functions by name substring (case-insensitive). Returns name and address. Pass an empty string to list all functions. Optional start/end address filters limit results to function entry-points in a range. Use get_function_info for full details on any result.")
+    @Operation(tags = "Functions", operationId = "search_functions", summary = "Find functions by name substring (case-insensitive); empty string lists all. Returns name and address — use get_function_info for full details.")
     @ApiResponse(responseCode = "200", description = "Function search results",
             content = @Content(schema = @Schema(implementation = SearchFunctionsResponse.class)))
     public SearchFunctionsResponse searchFunctions(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to get valid values.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName,
-            @Parameter(description = "Substring to search for (case-insensitive). Pass an empty string to list all functions.")
+            @Parameter(description = "Name substring (case-insensitive); empty lists all.")
             @QueryParam("query") @DefaultValue("") String query,
-            @Parameter(description = "Maximum number of items to return (max 1000). 'count' is the size of this page; 'truncated' is true when further matches were dropped.")
+            @Parameter(description = "Max items (max 1000); 'truncated' means matches were dropped.")
             @QueryParam("limit") @DefaultValue("100") int limit,
-            @Parameter(description = "Optional start address (inclusive) for function entry-point filtering.")
+            @Parameter(description = "Lower bound (inclusive) for function entry points.")
             @QueryParam("start_address") String startAddress,
-            @Parameter(description = "Optional end address (inclusive) for function entry-point filtering.")
+            @Parameter(description = "Upper bound (inclusive) for function entry points.")
             @QueryParam("end_address") String endAddress) {
         Program program = openProgram(programName);
         int validatedLimit = requireLimit(limit, 1000, "limit");
@@ -701,16 +701,16 @@ public class ReadTools {
 
     @GET
     @Path("/search_data_types")
-    @Operation(operationId = "search_data_types", summary = "Search for data types by name (case-insensitive). Pass an empty string to list all data types. Use list_data_type_categories to explore the category hierarchy. "
+    @Operation(tags = "Data types", operationId = "search_data_types", summary = "Search for data types by name (case-insensitive). Pass an empty string to list all data types. Use list_data_type_categories to explore the category hierarchy. "
             + "Note that the C99 fixed-width spellings (int8_t..int64_t, uint8_t..uint64_t, size_t, ssize_t, intptr_t, uintptr_t, ptrdiff_t) are accepted by every tool that takes a type name even when they are absent here — they resolve to a type of exactly that width.")
     @ApiResponse(responseCode = "200", description = "Data type search results",
             content = @Content(schema = @Schema(implementation = SearchDataTypesResponse.class)))
     public SearchDataTypesResponse searchDataTypes(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to get valid values.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName,
             @Parameter(description = "Substring filter applied to data type names (case-insensitive). Pass an empty string to list all data types.")
             @QueryParam("query") @DefaultValue("") String query,
-            @Parameter(description = "Maximum number of items to return (max 500). 'count' is the size of this page; 'truncated' is true when further matches were dropped.")
+            @Parameter(description = "Max items (max 500); 'truncated' means matches were dropped.")
             @QueryParam("limit") @DefaultValue("50") int limit) {
         Program program = openProgram(programName);
         int validatedLimit = requireLimit(limit, 500, "limit");
@@ -764,17 +764,17 @@ public class ReadTools {
 
     @GET
     @Path("/search_defined_strings")
-    @Operation(operationId = "search_defined_strings", summary = "Search for defined strings across the program listing.")
+    @Operation(tags = "Symbols and memory", operationId = "search_defined_strings", summary = "Search for defined strings across the program listing.")
     @ApiResponse(responseCode = "200", description = "Defined string search results",
             content = @Content(schema = @Schema(implementation = SearchDefinedStringsResponse.class)))
     public SearchDefinedStringsResponse searchDefinedStrings(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to see available programs.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName,
             @Parameter(description = "Optional substring match (case-insensitive) applied to string values. Pass an empty string or omit to list all defined strings.")
             @QueryParam("query") String query,
             @Parameter(description = "0-based item offset for pagination. O(n) cost — avoid large offsets on large programs.")
             @QueryParam("offset") @DefaultValue("0") int offset,
-            @Parameter(description = "Maximum number of items to return (max 1000). 'count' is the size of this page; 'truncated' is true when further matches were dropped — raise 'offset' by 'count' to page on.")
+            @Parameter(description = "Max items (max 1000); 'truncated' means matches were dropped — raise 'offset' by 'count' to page on.")
             @QueryParam("limit") @DefaultValue("200") int limit) {
         Program program = openProgram(programName);
         int validatedOffset = requireNonNegative(offset, "offset");
@@ -809,12 +809,12 @@ public class ReadTools {
 
     @GET
     @Path("/search_bytes")
-    @Operation(operationId = "search_bytes",
+    @Operation(tags = "Symbols and memory", operationId = "search_bytes",
             summary = "Search initialized memory for a hex byte pattern. Supports wildcards with ?? and optional address-range filtering.")
     @ApiResponse(responseCode = "200", description = "Byte-pattern search results",
             content = @Content(schema = @Schema(implementation = SearchBytesResponse.class)))
     public SearchBytesResponse searchBytes(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to get valid values.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName,
             @Parameter(description = "Hex byte pattern, e.g. 'FF ?? 48' or '68 4E 58 50 20'.", required = true)
             @QueryParam("hex_pattern") String hexPattern,
@@ -856,12 +856,12 @@ public class ReadTools {
 
     @GET
     @Path("/search_instructions")
-    @Operation(operationId = "search_instructions",
+    @Operation(tags = "Code", operationId = "search_instructions",
             summary = "Search decoded instructions for a byte-pattern prefix (supports ?? wildcards) with optional address-range filtering.")
     @ApiResponse(responseCode = "200", description = "Instruction-pattern search results",
             content = @Content(schema = @Schema(implementation = SearchInstructionsResponse.class)))
     public SearchInstructionsResponse searchInstructions(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to get valid values.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName,
             @Parameter(description = "Instruction byte pattern, e.g. 'FF ?? 48'.", required = true)
             @QueryParam("pattern") String patternText,
@@ -907,11 +907,11 @@ public class ReadTools {
 
     @GET
     @Path("/get_struct_layout")
-    @Operation(operationId = "get_struct_layout", summary = "Get the field layout of a structure data type.")
+    @Operation(tags = "Data types", operationId = "get_struct_layout", summary = "Get the field layout of a structure data type.")
     @ApiResponse(responseCode = "200", description = "Structure layout",
             content = @Content(schema = @Schema(implementation = GetStructLayoutResponse.class)))
     public GetStructLayoutResponse getStructLayout(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to see available programs.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName,
             @Parameter(description = "Exact name of the structure data type.", required = true)
             @QueryParam("name") String name) {
@@ -941,23 +941,23 @@ public class ReadTools {
 
     @GET
     @Path("/get_xrefs_to")
-    @Operation(operationId = "get_xrefs_to",
-            summary = "List cross-references to an address or symbol, with optional ref-type and source-address-range filtering. " +
-                    "When the target resolves to a function entry point, indirect caller candidates are also returned.")
+    @Operation(tags = "Cross-references", operationId = "get_xrefs_to",
+            summary = "List cross-references to an address or symbol. When the target is a function "
+                    + "entry point, indirect caller candidates are included.")
     @ApiResponse(responseCode = "200", description = "Cross-references to address",
             content = @Content(schema = @Schema(implementation = XrefsResponse.class)))
     public XrefsResponse getXrefsTo(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to see available programs.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName,
-            @Parameter(description = "Target: a function/symbol name (case-sensitive) — function, global, label, etc. — or a 0x-prefixed hex address (e.g. 0x00401000).", required = true)
+            @Parameter(description = "Symbol name (case-sensitive) or 0x-prefixed hex address.", required = true)
             @QueryParam("name_or_address") String nameOrAddress,
-            @Parameter(description = "Optional reference type filter(s). Either a category — CALL, COMPUTED_CALL, DATA, READ, WRITE, OTHER — or an exact Ghidra reference type name such as UNCONDITIONAL_CALL. Can be repeated or comma-separated; an unrecognised name is rejected.")
+            @Parameter(description = "Filter by category (CALL, COMPUTED_CALL, DATA, READ, WRITE, OTHER) or exact Ghidra type name (e.g. UNCONDITIONAL_CALL). Repeatable or comma-separated.")
             @QueryParam("ref_types") List<String> refTypes,
-            @Parameter(description = "Optional lower bound (inclusive) for xref source addresses.")
+            @Parameter(description = "Lower bound (inclusive) for xref source addresses.")
             @QueryParam("start_address") String startAddress,
-            @Parameter(description = "Optional upper bound (inclusive) for xref source addresses.")
+            @Parameter(description = "Upper bound (inclusive) for xref source addresses.")
             @QueryParam("end_address") String endAddress,
-            @Parameter(description = "Maximum number of cross-references to return (max 5000). 'count' is the size of this page; 'truncated' is true when further matches were dropped. Narrow with ref_types or start_address/end_address rather than raising this.")
+            @Parameter(description = "Max xrefs (max 5000); 'truncated' means matches were dropped — narrow the filters rather than raise this.")
             @QueryParam("limit") @DefaultValue("500") int limit) {
         Program program = openProgram(programName);
         int validatedLimit = requireLimit(limit, MAX_XREF_LIMIT, "limit");
@@ -996,21 +996,21 @@ public class ReadTools {
 
     @GET
     @Path("/get_xrefs_from")
-    @Operation(operationId = "get_xrefs_from", summary = "List cross-references originating from an address with optional destination-range and ref-type filters.")
+    @Operation(tags = "Cross-references", operationId = "get_xrefs_from", summary = "List cross-references originating from an address with optional destination-range and ref-type filters.")
     @ApiResponse(responseCode = "200", description = "Cross-references from address",
             content = @Content(schema = @Schema(implementation = XrefsResponse.class)))
     public XrefsResponse getXrefsFrom(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to see available programs.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName,
             @Parameter(description = "Hex address with 0x prefix, e.g. 0x00401000. Use search_functions to find entry points.", required = true)
             @QueryParam("address") String addressText,
-            @Parameter(description = "Optional reference type filter(s). Either a category — CALL, COMPUTED_CALL, DATA, READ, WRITE, OTHER — or an exact Ghidra reference type name such as UNCONDITIONAL_CALL. Can be repeated or comma-separated; an unrecognised name is rejected.")
+            @Parameter(description = "Filter by category (CALL, COMPUTED_CALL, DATA, READ, WRITE, OTHER) or exact Ghidra type name (e.g. UNCONDITIONAL_CALL). Repeatable or comma-separated.")
             @QueryParam("ref_types") List<String> refTypes,
             @Parameter(description = "Optional lower bound (inclusive) for destination addresses.")
             @QueryParam("start_address") String startAddress,
             @Parameter(description = "Optional upper bound (inclusive) for destination addresses.")
             @QueryParam("end_address") String endAddress,
-            @Parameter(description = "Maximum number of cross-references to return (max 5000). 'count' is the size of this page; 'truncated' is true when further matches were dropped.")
+            @Parameter(description = "Max xrefs (max 5000); 'truncated' means matches were dropped.")
             @QueryParam("limit") @DefaultValue("500") int limit) {
         Program program = openProgram(programName);
         int validatedLimit = requireLimit(limit, MAX_XREF_LIMIT, "limit");
@@ -1038,13 +1038,13 @@ public class ReadTools {
 
     @GET
     @Path("/get_function_callees")
-    @Operation(operationId = "get_function_callees", summary = "Get all functions called by the specified function.")
+    @Operation(tags = "Functions", operationId = "get_function_callees", summary = "Get all functions called by the specified function.")
     @ApiResponse(responseCode = "200", description = "Function callees",
             content = @Content(schema = @Schema(implementation = FunctionCalleesResponse.class)))
     public FunctionCalleesResponse getFunctionCallees(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to see available programs.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName,
-            @Parameter(description = "Function name (case-sensitive) or 0x-prefixed hex entry-point address.", required = true)
+            @Parameter(description = "Function name (case-sensitive) or 0x-prefixed hex entry point.", required = true)
             @QueryParam("name_or_address") String nameOrAddress) {
         Program program = openProgram(programName);
         Function function = findFunction(program, requireText(nameOrAddress, "name_or_address"));
@@ -1057,18 +1057,18 @@ public class ReadTools {
 
     @GET
     @Path("/search_constant_references")
-    @Operation(operationId = "search_constant_references",
+    @Operation(tags = "Code", operationId = "search_constant_references",
             summary = "Find all instructions that use a specific constant as an immediate operand. " +
                     "Useful for locating every usage of a magic number, error code, or flag value, " +
                     "e.g. passing 0x100D0 to find all mov/cmp/push instructions referencing that constant.")
     @ApiResponse(responseCode = "200", description = "Constant reference search results",
             content = @Content(schema = @Schema(implementation = SearchConstantReferencesResponse.class)))
     public SearchConstantReferencesResponse searchConstantReferences(
-            @Parameter(description = "Name of the open program to analyze. Use list_project_files to see available programs.", required = true)
+            @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName,
             @Parameter(description = "Constant to search for. Accepts decimal (e.g. 65744), 0x-prefixed hex (e.g. 0x100D0), or a negative value treated as its unsigned bit pattern (e.g. -1 matches 0xFFFFFFFFFFFFFFFF).", required = true)
             @QueryParam("value") String valueText,
-            @Parameter(description = "Maximum number of hits to return (max 2000). 'count' is the size of this page; 'truncated' is true when further matches were dropped.")
+            @Parameter(description = "Maximum number of hits to return (max 2000). 'truncated' is true when matches were dropped.")
             @QueryParam("limit") @DefaultValue("200") int limit) {
         Program program = openProgram(programName);
         int validatedLimit = requireLimit(limit, 2000, "limit");

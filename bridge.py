@@ -4,7 +4,13 @@ bridge.py — Minimal MCP bridge for ghidra-mcp-ng.
 
 Translates MCP JSON-RPC 2.0 (stdio) to the Ghidra HTTP REST API by fetching
 the server's OpenAPI schema at startup and using it to build the MCP tool list
-and dispatch every tool call. No tools are hardcoded here.
+and dispatch every tool call. No tool definitions are hardcoded here.
+
+Tools are exposed progressively rather than all at once. `tools/list` returns only
+the always-useful core (HOT_CORE below) plus three discovery tools; every other
+tool is reached through list_tools → describe_tool → call_tool. A full schema dump
+costs several thousand tokens of context in every session, most of it for tools a
+given session never calls, so the long tail is fetched on demand instead.
 
 Usage:
     python bridge.py [--url http://127.0.0.1:8192] [--logfile /tmp/bridge.log]
@@ -24,6 +30,7 @@ Requirements: Python 3.8+, stdlib only.
 
 import sys
 import json
+import difflib
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -34,6 +41,28 @@ from typing import Any
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "ghidra-mcp-ng"
 SERVER_VERSION = "0.1.0"
+
+# Tools listed natively, with full schemas, in every session. These are the ones a
+# session reaches for constantly, where a discovery round trip would be pure overhead.
+# Everything else is discoverable via list_tools/describe_tool and callable via
+# call_tool. Adding an entry here is a deliberate trade: permanent context for one
+# saved round trip.
+HOT_CORE = (
+    "list_project_files",
+    "get_program_info",
+    "decompile_function",
+    "get_function_info",
+    "search_functions",
+    "get_xrefs_to",
+    "get_disassembly",
+    "get_function_variables",
+    "rename_function",
+    "rename_variable",
+    "set_comment",
+    "run_script",
+)
+
+UNCATEGORIZED = "Other"
 
 
 # ---------------------------------------------------------------------------
@@ -143,38 +172,195 @@ def _input_schema(spec: dict, op: dict, method: str) -> dict:
     return result
 
 
-def _openapi_to_mcp_tools(spec: dict) -> list[dict]:
-    """Convert an OpenAPI spec to an MCP tools list."""
-    tools = []
+def _index(spec: dict) -> dict[str, dict]:
+    """Map every operationId to its path, HTTP method, category and raw operation."""
+    ops: dict[str, dict] = {}
     for path, methods in spec.get("paths", {}).items():
         for method, op in methods.items():
             if method not in ("get", "post") or "operationId" not in op:
                 continue
-            tools.append({
-                "name": op["operationId"],
-                "description": op.get("summary", op["operationId"]),
-                "inputSchema": _input_schema(spec, op, method),
-            })
-    tools.sort(key=lambda t: t["name"])
+            tags = op.get("tags") or []
+            ops[op["operationId"]] = {
+                "path": path,
+                "method": method,
+                "category": tags[0] if tags else UNCATEGORIZED,
+                "op": op,
+            }
+    return ops
+
+
+def _categories(ops: dict[str, dict]) -> dict[str, list[str]]:
+    """Group operationIds by category, both the mapping and each list sorted."""
+    grouped: dict[str, list[str]] = {}
+    for name in sorted(ops):
+        grouped.setdefault(ops[name]["category"], []).append(name)
+    return dict(sorted(grouped.items()))
+
+
+def _tool_entry(spec: dict, name: str, entry: dict) -> dict:
+    """Build a full MCP tool definition for one indexed operation."""
+    return {
+        "name": name,
+        "description": entry["op"].get("summary", name),
+        "inputSchema": _input_schema(spec, entry["op"], entry["method"]),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Discovery tools
+#
+# These three are implemented here in the bridge, not on the Ghidra server: they
+# describe the tool surface rather than touching a program, and the server already
+# publishes everything they need at /openapi.json.
+# ---------------------------------------------------------------------------
+
+def _meta_tools(ops: dict[str, dict]) -> list[dict]:
+    category_names = sorted({e["category"] for e in ops.values()})
+    hidden = sorted(set(ops) - set(HOT_CORE))
+    return [
+        {
+            "name": "list_tools",
+            "description": (
+                "List the Ghidra tools not shown here — only the most-used ones are listed "
+                "directly. No arguments gives every category and its tool names; a category "
+                "adds a one-line summary per tool. Categories: "
+                + ", ".join(category_names) + "."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "Restrict the listing to one category.",
+                        "enum": category_names,
+                    },
+                },
+            },
+        },
+        {
+            "name": "describe_tool",
+            "description": (
+                "Get the full parameter schema for any Ghidra tool, listed here or not. "
+                "Use it before call_tool when you do not know a tool's arguments."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Tool name, e.g. from list_tools.",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+        {
+            "name": "call_tool",
+            "description": (
+                "Run any Ghidra tool by name, listed here or not (" + ", ".join(hidden[:5])
+                + ", … — see list_tools). Pass its arguments as an object."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Tool name to run, e.g. from list_tools.",
+                    },
+                    "arguments": {
+                        "type": "object",
+                        "description": "That tool's arguments; see describe_tool.",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+    ]
+
+
+def _openapi_to_mcp_tools(spec: dict) -> list[dict]:
+    """Build the MCP tools list: the hot core with full schemas, plus discovery tools."""
+    ops = _index(spec)
+    tools = [_tool_entry(spec, name, ops[name]) for name in sorted(ops) if name in HOT_CORE]
+    tools.extend(_meta_tools(ops))
     return tools
 
 
+def _unknown_tool(name: str, ops: dict[str, dict]) -> ValueError:
+    """Reject an unknown tool name, naming the nearest real one rather than all of them."""
+    close = difflib.get_close_matches(name, list(ops), n=1, cutoff=0.6)
+    if close:
+        hint = f"Did you mean '{close[0]}'?"
+    else:
+        hint = "Use list_tools to see what exists."
+    return ValueError(f"Unknown tool: '{name}'. {hint}")
+
+
+def _do_list_tools(ops: dict[str, dict], arguments: dict) -> Any:
+    grouped = _categories(ops)
+    category = arguments.get("category")
+    if category is None:
+        return {"categories": grouped}
+    if category not in grouped:
+        close = difflib.get_close_matches(category, list(grouped), n=1, cutoff=0.5)
+        hint = f"Did you mean '{close[0]}'?" if close else \
+            "Valid categories: " + ", ".join(grouped) + "."
+        raise ValueError(f"Unknown category: '{category}'. {hint}")
+    return {
+        "category": category,
+        "tools": [
+            {"name": n, "summary": ops[n]["op"].get("summary", n)}
+            for n in grouped[category]
+        ],
+    }
+
+
+def _do_describe_tool(spec: dict, ops: dict[str, dict], arguments: dict) -> Any:
+    name = arguments.get("name")
+    if not name:
+        raise ValueError("Required parameter 'name' is missing")
+    if name not in ops:
+        raise _unknown_tool(name, ops)
+    entry = ops[name]
+    return {
+        "name": name,
+        "category": entry["category"],
+        "description": entry["op"].get("summary", name),
+        "inputSchema": _input_schema(spec, entry["op"], entry["method"]),
+    }
+
+
 def _dispatch(spec: dict, base: str, name: str, arguments: dict) -> Any:
-    """Call a tool by looking up its operationId in the OpenAPI spec."""
-    for path, methods in spec.get("paths", {}).items():
-        for method, op in methods.items():
-            if op.get("operationId") != name:
-                continue
-            url = base + path
-            if method == "get":
-                if arguments:
-                    url = f"{url}?{urllib.parse.urlencode(arguments)}"
-                return _get(url)
-            else:
-                return _post(url, arguments)
-    raise ValueError(
-        f"Unknown tool: '{name}'. Use tools/list to see all available tools."
-    )
+    """Run a tool by name — a discovery tool here, or an operationId over HTTP."""
+    ops = _index(spec)
+
+    if name == "list_tools":
+        return _do_list_tools(ops, arguments)
+    if name == "describe_tool":
+        return _do_describe_tool(spec, ops, arguments)
+    if name == "call_tool":
+        target = arguments.get("name")
+        if not target:
+            raise ValueError("Required parameter 'name' is missing")
+        if target in ("list_tools", "describe_tool", "call_tool"):
+            raise ValueError(
+                f"call_tool cannot run '{target}': it is a discovery tool, call it directly."
+            )
+        return _dispatch(spec, base, target, arguments.get("arguments") or {})
+
+    if name not in ops:
+        raise _unknown_tool(name, ops)
+
+    entry = ops[name]
+    url = base + entry["path"]
+    if entry["method"] == "get":
+        if arguments:
+            # doseq spreads a list into repeated params, which is what the server's
+            # List<String> query params (ref_types) parse; without it the list arrives
+            # as its Python repr and matches no reference type.
+            url = f"{url}?{urllib.parse.urlencode(arguments, doseq=True)}"
+        return _get(url)
+    return _post(url, arguments)
 
 
 # ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ specific, and actionable so an LLM can self-correct without guessing.**
 
 ## Design principles (read first)
 
-Three principles outrank almost everything else here. When a change trades one of them away
+These principles outrank almost everything else here. When a change trades one of them away
 for convenience, don't make it — reconsider the design.
 
 1. **Consistency.** The tool surface must feel like one API, not a pile of independently
@@ -28,7 +28,43 @@ for convenience, don't make it — reconsider the design.
    when the capability is genuinely distinct and can't live as an option on something that
    already exists. Every new tool is one more thing the agent must learn, disambiguate, and
    possibly misuse — treat that as a real cost.
-3. **Breaking changes are cheap; correctness is not.** The only consumer is an LLM agent that
+
+   **A specialized capability ships as a Ghidra script, not as a tool.** The tool surface is
+   reserved for general-purpose primitives — things every binary needs, phrased in terms of
+   functions, addresses, symbols, types and memory. Anything narrower — tied to one executable
+   format, one toolchain, one workflow, or one analysis recipe — belongs in `ghidra_scripts/`
+   as a `GhidraScript`, where the agent reaches it through `list_scripts` /
+   `get_script_description` / `run_script`. That path is itself the progressive-disclosure
+   mechanism: a script costs nothing until the agent goes looking for it, whereas a tool costs
+   context in every session forever. The existing scripts (PE parsing, vtable recovery,
+   signature propagation, program/function audits) are the model — if a proposed tool would
+   read like one of those, write a script instead.
+   Litmus test before adding any `@GET`/`@POST`: *would an agent reversing an unfamiliar binary
+   reach for this in the first ten minutes?* If not, it is a script.
+3. **Context is a budget; spend it on what the session actually uses.** Every tool listed to
+   the agent costs its full JSON schema in every session, whether or not it is ever called —
+   so the surface is exposed *progressively*, not all at once. `bridge.py` lists only
+   `HOT_CORE` (the handful of tools a session reaches for constantly) plus three discovery
+   tools — `list_tools`, `describe_tool`, `call_tool` — and everything else is fetched on
+   demand. The grouping key is the swagger `tags` entry on each `@Operation`; both `bridge.py`
+   and `scripts/generate_tools_docs.py` read it, so a new tool is categorized where it is
+   defined and nowhere else. Practical consequences when you add or change a tool:
+   - **Always set `tags`** to exactly one existing category. Adding a category is fine when a
+     tool genuinely fits none, but check first — categories are how the agent navigates.
+   - **Do not add to `HOT_CORE` casually.** An entry there buys one saved round trip and pays
+     for it with permanent context in every session. The bar is "an unfamiliar binary needs
+     this in the first ten minutes", the same bar as the scripts rule above.
+   - A verbose `summary` on a non-core tool is cheap (it is only read on demand); a verbose
+     one on a `HOT_CORE` tool is not. Budget accordingly.
+   - **Write summaries and `@Parameter` text short.** One line saying what the tool does and
+     naming the tool to use next — not a manual. Facts that only matter while *authoring*
+     something belong on the tool that authors it (the script transaction contract lives on
+     `add_script`, not on `run_script`, which every session sees). Repeated parameters use one
+     fixed wording everywhere — `program` is "Program name; see list_project_files.", a `limit`
+     states its max and what `truncated` means, and nothing repeats what the tool name says.
+     Error messages are the exception: they are only paid on failure, so keep them specific
+     (coding standard 1) rather than trimming them.
+4. **Breaking changes are cheap; correctness is not.** The only consumer is an LLM agent that
    reads the current tool schema on every session and adapts immediately — there is no pinned
    client, no stored integration, no deprecation window to honor. So do not preserve backward
    compatibility for its own sake: when a parameter name, response shape, or behavior is wrong,
@@ -66,7 +102,8 @@ src/main/java/com/ghidramcpng/
   model/                   Shared DTO records: FunctionEntry, FunctionRef, XrefEntry, VariableEntry,
                            StructField, DataTypeEntry, ExportEntry, ImportEntry, StringEntry.
 
-bridge.py                  stdlib-only MCP↔HTTP bridge (no deps).
+bridge.py                  stdlib-only MCP↔HTTP bridge (no deps). Owns the progressive-disclosure
+                           layer: HOT_CORE + list_tools/describe_tool/call_tool (principle 3).
 start.py, build_and_install.py   Launch / build+install helpers.
 rules.yaml                 Naming-convention + timeout config (optional at runtime).
 TOOLS.md                   GENERATED tool reference — do not hand-edit; regenerate from the spec.
@@ -78,17 +115,27 @@ tests/                     Python: conftest.py (live-server fixture), test_integ
 The MCP tool count is derived by reflection (`ToolHelpers.countEndpoints`), so it stays in
 sync automatically — never hardcode it. For the current tool list, see `TOOLS.md`.
 
+Do not write a tool count (or a script count) into prose anywhere — not in comments, README,
+skills, docstrings, or sample output. It changes every time the surface does, nobody notices it
+went stale, and the exact number never told the reader anything they could act on. Say "the
+tools" or point at `/health`, `/schema` and `TOOLS.md`, which compute it.
+
 ## How a tool is defined
 
 A tool is a public method on `ReadTools`/`WriteTools`/`ScriptTool` annotated with JAX-RS +
-swagger annotations. The `operationId` IS the MCP tool name.
+swagger annotations. The `operationId` IS the MCP tool name, and `tags` IS its category —
+one of: Annotation, Code, Cross-references, Data types, Functions, Program, Scripting,
+Symbols and memory. A tool with no `tags` still works, but it lands in an "Other" bucket at
+the bottom of `TOOLS.md` and in `list_tools` — that bucket exists to make the omission
+visible, not as a place to leave things.
 
 **GET (read) tools** take `@QueryParam` arguments:
 
 ```java
 @GET
 @Path("/get_function_info")
-@Operation(operationId = "get_function_info", summary = "One-line description shown to the agent.")
+@Operation(tags = "Functions", operationId = "get_function_info",
+        summary = "One-line description shown to the agent.")
 @ApiResponse(responseCode = "200", description = "...",
         content = @Content(schema = @Schema(implementation = FunctionEntry.class)))
 public FunctionEntry getFunctionInfo(
@@ -106,7 +153,7 @@ body is empty and the params are undiscoverable.
 
 ```java
 @POST @Path("/rename_function")
-@Operation(operationId = "rename_function", summary = "Rename a function.")
+@Operation(tags = "Annotation", operationId = "rename_function", summary = "Rename a function.")
 public RenameFunctionResponse renameFunction(
         @RequestBody(required = true,
                 content = @Content(schema = @Schema(implementation = RenameFunctionRequest.class)))
@@ -198,8 +245,11 @@ GHIDRA_HOME=$GHIDRA_HOME python3 -m pytest tests/          # Python (needs gcc; 
 ## Definition of done for a tool change
 
 - If this adds a tool: you confirmed the capability can't reasonably be an option on an
-  existing one (minimal-surface principle), and its parameter/response names match the
-  existing conventions (consistency principle).
+  existing one, and isn't specialized enough to belong in `ghidra_scripts/` instead
+  (minimal-surface principle), and its parameter/response names match the existing
+  conventions (consistency principle).
+- It carries a `tags` category, and you left `HOT_CORE` in `bridge.py` alone unless the tool
+  clears the first-ten-minutes bar (context-budget principle).
 - The tool compiles and its OpenAPI schema is populated (POST tools need the `@RequestBody`
   + request record).
 - Integration test(s) in `tests/test_integration.py` cover the happy path AND the error
