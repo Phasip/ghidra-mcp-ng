@@ -260,7 +260,7 @@ Full details for one function: signature, calling convention, size, thunk status
 
 ### `get_function_variables`
 
-Get all parameters and local variables of a function.
+Get a function's parameters, locals and decompiler temporaries; all are addressable by set_variable.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|:--------:|---------|-------------|

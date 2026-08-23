@@ -58,22 +58,15 @@ def _find_decompiler_temporary(client: GhidraClient, prog: str) -> tuple[str | N
         "search_functions", {"program": prog, "query": "", "limit": 500}
     )["functions"]
     for fn in functions:
-        # Externals and thunks have nothing to decompile; skip them rather than fail the search.
+        # A function with no body cannot report temporaries; skip it rather than fail the search.
         resp = client.call(
-            "decompile_function", {"program": prog, "name_or_address": fn["name"]},
+            "get_function_variables", {"program": prog, "name_or_address": fn["name"]},
         )
         if not resp.get("ok"):
             continue
-        decompiled = resp["result"]["decompiled"]
-        committed = {
-            v["name"] for v in client.ok(
-                "get_function_variables", {"program": prog, "name_or_address": fn["name"]},
-            )["variables"]
-            if v.get("kind") != "temporary"
-        }
-        for token in _TEMP_NAME_RE.findall(decompiled):
-            if token not in committed:
-                return fn["name"], token
+        for v in resp["result"]["variables"]:
+            if v["kind"] == "temporary" and _TEMP_NAME_RE.fullmatch(v["name"]):
+                return fn["name"], v["name"]
     return None, None
 
 
@@ -440,6 +433,23 @@ class TestDecompilation:
         # formal parameters depending on analysis depth, so only assert that
         # the function has at least some variables.
         assert len(variables) > 0, f"add() should have variables, got: {variables}"
+
+    def test_get_function_variables_lists_temporaries(
+            self, ghidra_server: GhidraClient, prog: str):
+        # register_churn is the fixture's one -O2 function, so its intermediates stay in
+        # registers and the decompiler has to invent variables for them.
+        variables = ghidra_server.ok(
+            "get_function_variables",
+            {"program": prog, "name_or_address": "register_churn"},
+        )["variables"]
+        temporaries = [v for v in variables if v["kind"] == "temporary"]
+        assert temporaries, f"register_churn should have temporaries, got: {variables}"
+        for temp in temporaries:
+            # A temporary's name is not a stable handle; where its value is defined is.
+            assert temp["defined_at"].startswith("0x")
+            assert temp["ordinal"] == -1
+        for other in (v for v in variables if v["kind"] != "temporary"):
+            assert other["defined_at"] is None
 
     def test_get_disassembly_returns_lines(self, ghidra_server: GhidraClient, prog: str):
         addr = _func_address(ghidra_server, prog, "add")

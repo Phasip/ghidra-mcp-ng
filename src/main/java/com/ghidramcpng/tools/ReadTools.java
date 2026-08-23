@@ -23,6 +23,8 @@ import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.pcode.HighFunction;
+import ghidra.program.model.pcode.HighSymbol;
 import ghidra.program.model.mem.Memory;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.mem.MemoryAccessException;
@@ -55,6 +57,7 @@ import java.util.Iterator;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.List;
@@ -598,7 +601,7 @@ public class ReadTools {
 
     @GET
     @Path("/get_function_variables")
-    @Operation(tags = "Functions", operationId = "get_function_variables", summary = "Get all parameters and local variables of a function.")
+    @Operation(tags = "Functions", operationId = "get_function_variables", summary = "Get a function's parameters, locals and decompiler temporaries; all are addressable by set_variable.")
     @ApiResponse(responseCode = "200", description = "Function variables",
             content = @Content(schema = @Schema(implementation = GetFunctionVariablesResponse.class)))
     public GetFunctionVariablesResponse getFunctionVariables(
@@ -609,11 +612,31 @@ public class ReadTools {
         Program program = openProgram(programName);
         Function function = findFunction(program, requireText(nameOrAddress, "name_or_address"));
         List<VariableEntry> variables = new ArrayList<>();
+        Set<String> committed = new HashSet<>();
         for (var parameter : function.getParameters()) {
             variables.add(VariableEntry.from(parameter));
+            committed.add(parameter.getName());
         }
         for (var variable : function.getLocalVariables()) {
             variables.add(VariableEntry.from(variable));
+            committed.add(variable.getName());
+        }
+        // The decompiler invents a variable for every register and intermediate value it cannot
+        // map to storage. They are the bulk of what an optimised function reads as, and
+        // set_variable can name them, so listing only the committed ones hides most of the work.
+        if (!function.isExternal()) {
+            HighFunction highFunction = ToolHelpers
+                    .decompileFreshWithResults(program, function, decompileTimeoutSeconds)
+                    .getHighFunction();
+            if (highFunction != null) {
+                Iterator<HighSymbol> symbols = highFunction.getLocalSymbolMap().getSymbols();
+                while (symbols.hasNext()) {
+                    HighSymbol symbol = symbols.next();
+                    if (!committed.contains(symbol.getName())) {
+                        variables.add(VariableEntry.fromTemporary(symbol));
+                    }
+                }
+            }
         }
         return new GetFunctionVariablesResponse(
                 function.getName(),
