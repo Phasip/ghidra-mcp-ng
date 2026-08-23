@@ -1,7 +1,7 @@
 /*
  * test_target.c — Minimal C binary for ghidra-mcp-ng integration tests.
  *
- * Functions:   add, multiply, compute, main, call_via_ptr, check_64bit_magic
+ * Functions:   add, multiply, compute, main, call_via_ptr, register_churn, check_64bit_magic
  * Call graph:  main -> compute -> add
  *              main -> compute -> multiply -> add
  *              call_via_ptr -> add (via function pointer — creates DATA ref to add)
@@ -54,6 +54,25 @@ int main(int argc, char *argv[]) {
  * returns the same Java long value (-2401053088876216593L), so searching by
  * the signed decimal form must find this instruction.
  */
+/*
+ * Compiled at -O2 while the rest of the file is -O0, so this function's intermediate values
+ * stay in registers instead of being spilled to the stack. Those are the "decompiler
+ * temporaries" the program database does not hold, and set_variable reaches them through a
+ * different code path than parameters and stack locals — this is the fixture's only source
+ * of them.
+ */
+__attribute__((optimize("O2")))
+int register_churn(int seed, int count) {
+    int acc = seed;
+    int i;
+    for (i = 0; i < count; i++) {
+        int scaled = multiply(acc, 3);
+        int mixed = scaled ^ (acc + i);
+        acc = add(mixed, scaled - i);
+    }
+    return acc ^ i;
+}
+
 long check_64bit_magic(long x) {
     return x == (long)0xDEADBEEFDEADBEEFL;
 }

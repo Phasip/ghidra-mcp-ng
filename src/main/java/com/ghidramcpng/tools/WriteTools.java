@@ -7,6 +7,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.program.model.pcode.HighFunction;
+import ghidra.program.model.pcode.HighFunctionDBUtil;
 import ghidra.program.model.pcode.HighSymbol;
 import ghidra.program.model.data.DataType;
 import ghidra.program.model.data.DataTypeComponent;
@@ -22,6 +23,7 @@ import ghidra.program.model.listing.Program;
 import ghidra.program.model.listing.ReturnParameterImpl;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Variable;
+import ghidra.program.model.listing.VariableStorage;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.symbol.Symbol;
 import ghidra.program.model.symbol.SymbolType;
@@ -63,9 +65,6 @@ import static com.ghidramcpng.tools.ToolHelpers.MAX_COMMENT_LENGTH;
 public class WriteTools {
 
     public static final int TOOL_COUNT = ToolHelpers.countEndpoints(WriteTools.class);
-
-    /** Timeout for the diagnostic decompile used to explain a failed variable rename. */
-    private static final int DIAGNOSTIC_DECOMPILE_SECONDS = 30;
 
     private final ProgramManager mgr;
     private final RulesEngine rules;
@@ -110,7 +109,7 @@ public class WriteTools {
     @POST
     @Path("/set_variable")
     @Operation(tags = "Annotation", operationId = "set_variable",
-            summary = "Rename and/or retype one parameter or local variable in a function.")
+            summary = "Rename and/or retype one parameter, local, or decompiler temporary in a function.")
     @ApiResponse(responseCode = "200", description = "Set variable result",
             content = @Content(schema = @Schema(implementation = SetVariableResponse.class)))
     public SetVariableResponse setVariable(
@@ -138,9 +137,12 @@ public class WriteTools {
         Program program = openProgram(programName);
         Function func = findFunction(program, funcRef);
         DataType dataType = typeName != null ? findDataType(program, typeName) : null;
-        // Resolve (and diagnose failures) before opening the write transaction so the
-        // diagnostic decompile in findVariable does not run inside it.
-        Variable found = findVariable(program, func, variableName);
+        Variable found = findCommittedVariable(func, variableName);
+        if (found == null || !hasStoredStorage(found)) {
+            // Everything the database does not hold in stack or memory storage — every register
+            // and intermediate value — has to be committed through the decompiler's own view.
+            return setTemporary(program, func, variableName, newName, dataType, typeName);
+        }
 
         runTransaction(program, "Set variable: " + func.getName() + "." + variableName, () -> {
             if (dataType != null) {
@@ -895,7 +897,11 @@ public class WriteTools {
                 "or pass a 0x-prefixed hex address.");
     }
 
-    private static Variable findVariable(Program program, Function func, String name) {
+    /**
+     * Finds a parameter or local variable the program database actually holds, or null when the
+     * name belongs to a value only the decompiler knows about (see {@link #setTemporary}).
+     */
+    private static Variable findCommittedVariable(Function func, String name) {
         for (Parameter p : func.getParameters()) {
             if (p.getName().equals(name)) {
                 return p;
@@ -906,45 +912,142 @@ public class WriteTools {
                 return v;
             }
         }
-        // Not a committed parameter or stack local. Decide which of the two distinct
-        // failures this is so the error tells the caller exactly what went wrong.
-        if (decompilerShowsVariable(program, func, name)) {
-            throw new IllegalArgumentException(
-                    "Variable '" + name + "' in function '" + func.getName() + "' is a decompiler " +
-                    "temporary — a register or intermediate value, not stored storage — so it cannot be " +
-                    "renamed. Only the parameters and stack locals listed by get_function_variables are " +
-                    "renameable; to annotate this one, use set_comment at its defining address.");
-        }
-        throw new IllegalArgumentException(
-                "Variable '" + name + "' not found in function '" + func.getName() + "'. " +
-                "Names are case-sensitive. Use get_function_variables to list the renameable " +
-                "parameters and locals with their exact names.");
+        return null;
     }
 
     /**
-     * Best-effort check for whether the decompiler displays a variable named {@code name} in
-     * {@code func}. Used only to produce a precise error when a rename target is not a committed
-     * stack/parameter variable: a decompiler temporary (piVar4, uVar11, …) is shown but cannot be
-     * renamed, versus a name that simply does not exist. Returns false if decompilation fails.
+     * True when a committed variable can be updated straight through the database. Register- and
+     * hash-backed locals cannot: their storage is recovered by the decompiler, so a write to them
+     * has to go back through {@link HighFunctionDBUtil} like any other temporary.
      */
-    private static boolean decompilerShowsVariable(Program program, Function func, String name) {
-        try {
-            DecompileResults results =
-                    ToolHelpers.decompileFreshWithResults(program, func, DIAGNOSTIC_DECOMPILE_SECONDS);
-            HighFunction highFunction = results.getHighFunction();
-            if (highFunction == null) {
-                return false;
+    private static boolean hasStoredStorage(Variable variable) {
+        if (variable instanceof Parameter) {
+            return true;
+        }
+        VariableStorage storage = variable.getVariableStorage();
+        return storage != null && (storage.isStackStorage() || storage.isMemoryStorage());
+    }
+
+    /**
+     * Applies a name and/or type to a value the decompiler shows but the database does not hold —
+     * a register or intermediate value, what Ghidra calls a decompiler temporary. Committing one
+     * creates a real local variable, which the decompiler may then fail to match back to any value
+     * on the next decompile; that is a silent no-op, so the write is verified and rolled back
+     * rather than reported as a success that later vanishes.
+     */
+    private SetVariableResponse setTemporary(Program program, Function func, String variableName,
+            String newName, DataType dataType, String typeName) {
+        int timeoutSeconds = rules.getDecompileTimeoutSeconds();
+        HighSymbol symbol = requireHighSymbol(program, func, variableName, timeoutSeconds);
+
+        if (newName == null && !symbol.isNameLocked()) {
+            throw new IllegalArgumentException(
+                    "Retyping '" + variableName + "' in function '" + func.getName() + "' needs " +
+                    "'new_name' too. It is a decompiler temporary, and the decompiler derives a " +
+                    "temporary's name from its type — retyping it alone would leave a variable with " +
+                    "a new auto-generated name and nothing stable to address it by. Pass 'new_name' " +
+                    "and 'type_name' together.");
+        }
+
+        String finalName = newName != null ? newName : variableName;
+        runTransaction(program, "Set temporary: " + func.getName() + "." + variableName, () -> {
+            try {
+                HighFunctionDBUtil.updateDBVariable(symbol, newName, dataType, SourceType.USER_DEFINED);
+            } catch (DuplicateNameException e) {
+                throw new IllegalArgumentException(
+                        "A variable named '" + finalName + "' already exists in function '" +
+                        func.getName() + "'. Use a unique name.");
+            } catch (InvalidInputException | UnsupportedOperationException e) {
+                throw new IllegalArgumentException(
+                        "Cannot apply " + (typeName != null ? "type '" + typeName + "' " : "a name ") +
+                        "to '" + variableName + "' in function '" + func.getName() + "': " +
+                        e.getMessage() + " Its storage is " + symbol.getStorage() +
+                        ", so a type of a different size does not fit.");
             }
+        });
+
+        HighSymbol applied = findHighSymbol(program, func, finalName, timeoutSeconds);
+        if (applied == null) {
+            throw new IllegalArgumentException(
+                    "Ghidra accepted the write but did not keep it: '" + variableName + "' (" +
+                    symbol.getStorage() + " at " + symbol.getPCAddress() + ") is a value the " +
+                    "decompiler re-derives on every decompile, and it did not match the local " +
+                    "variable the write created. " + rollBackUnmatchedLocal(program, func, finalName) +
+                    " This value cannot be named; record it with set_comment at " +
+                    symbol.getPCAddress() + " instead.");
+        }
+        // Report the type the database now holds, which is what get_function_variables will
+        // show — not the decompiler's inference for the same value.
+        Variable committed = findCommittedVariable(func, finalName);
+        DataType appliedType = committed != null ? committed.getDataType() : applied.getDataType();
+        return new SetVariableResponse(true, finalName,
+                appliedType != null ? appliedType.getName() : null, "temporary");
+    }
+
+    /**
+     * Deletes the local variable left behind by a commit the decompiler did not match, so a failed
+     * write leaves no half-applied state. Returns the sentence describing what happened, for the
+     * error the caller is about to throw.
+     */
+    private String rollBackUnmatchedLocal(Program program, Function func, String name) {
+        try {
+            runTransaction(program, "Roll back unmatched local: " + name, () -> {
+                for (Variable v : func.getLocalVariables()) {
+                    if (v.getName().equals(name)) {
+                        func.removeVariable(v);
+                    }
+                }
+            });
+            return "The write has been rolled back.";
+        } catch (RuntimeException e) {
+            return "Rolling the write back also failed (" + e.getMessage() + "), so the unmatched " +
+                    "local '" + name + "' is still in the database — remove it in the Ghidra UI.";
+        }
+    }
+
+    /** The decompiler's symbol named {@code name} in {@code func}, or null if it shows no such name. */
+    private static HighSymbol findHighSymbol(Program program, Function func, String name,
+            int timeoutSeconds) {
+        DecompileResults results =
+                ToolHelpers.decompileFreshWithResults(program, func, timeoutSeconds);
+        HighFunction highFunction = results.getHighFunction();
+        if (highFunction == null) {
+            return null;
+        }
+        Iterator<HighSymbol> symbols = highFunction.getLocalSymbolMap().getSymbols();
+        while (symbols.hasNext()) {
+            HighSymbol symbol = symbols.next();
+            if (name.equals(symbol.getName())) {
+                return symbol;
+            }
+        }
+        return null;
+    }
+
+    /** As {@link #findHighSymbol}, but reports what the decompiler does show when the name is absent. */
+    private static HighSymbol requireHighSymbol(Program program, Function func, String name,
+            int timeoutSeconds) {
+        DecompileResults results =
+                ToolHelpers.decompileFreshWithResults(program, func, timeoutSeconds);
+        HighFunction highFunction = results.getHighFunction();
+        List<String> known = new ArrayList<>();
+        if (highFunction != null) {
             Iterator<HighSymbol> symbols = highFunction.getLocalSymbolMap().getSymbols();
             while (symbols.hasNext()) {
-                if (name.equals(symbols.next().getName())) {
-                    return true;
+                HighSymbol symbol = symbols.next();
+                if (name.equals(symbol.getName())) {
+                    return symbol;
                 }
+                known.add(symbol.getName());
             }
-            return false;
-        } catch (RuntimeException e) {
-            return false;
         }
+        String suggestion = ApiSupport.suggestClosest(name, known);
+        throw new IllegalArgumentException(
+                "Variable '" + name + "' not found in function '" + func.getName() + "'. " +
+                "Names are case-sensitive. " +
+                (suggestion != null ? "Did you mean '" + suggestion + "'? " : "") +
+                "Use get_function_variables to list the parameters, locals and temporaries with " +
+                "their exact current names.");
     }
 
     public record RenameFunctionRequest(

@@ -45,6 +45,38 @@ def _hex(addr: str) -> str:
     return addr if addr.startswith("0x") else "0x" + addr
 
 
+_TEMP_NAME_RE = re.compile(r"\b[a-z]{1,4}Var\d+\b")
+
+
+def _find_decompiler_temporary(client: GhidraClient, prog: str) -> tuple[str | None, str | None]:
+    """
+    Return (function_name, temporary_name) for the first decompiler temporary in the program,
+    or (None, None). A temporary is a name the decompiler shows that the program database does
+    not hold as a parameter or local — which is what makes naming one a different code path.
+    """
+    functions = client.ok(
+        "search_functions", {"program": prog, "query": "", "limit": 500}
+    )["functions"]
+    for fn in functions:
+        # Externals and thunks have nothing to decompile; skip them rather than fail the search.
+        resp = client.call(
+            "decompile_function", {"program": prog, "name_or_address": fn["name"]},
+        )
+        if not resp.get("ok"):
+            continue
+        decompiled = resp["result"]["decompiled"]
+        committed = {
+            v["name"] for v in client.ok(
+                "get_function_variables", {"program": prog, "name_or_address": fn["name"]},
+            )["variables"]
+            if v.get("kind") != "temporary"
+        }
+        for token in _TEMP_NAME_RE.findall(decompiled):
+            if token not in committed:
+                return fn["name"], token
+    return None, None
+
+
 def _last_json_line(text: str) -> dict:
     """Parse the last non-empty output line as JSON."""
     lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -797,33 +829,11 @@ class TestWriteOperations:
         assert "not found" in error.lower()
         assert "decompiler temporary" not in error
 
-    def test_rename_decompiler_temporary_explains_why(
+    def test_set_variable_names_a_decompiler_temporary(
             self, ghidra_server: GhidraClient, prog: str):
-        # Find a real decompiler temporary (e.g. uVar1, iVar3, uStack_c) in any function so
-        # the test is robust across Ghidra versions and fixture simplicity. Such names are
-        # register/intermediate values shown by the decompiler but not renameable.
-        functions = ghidra_server.ok(
-            "search_functions", {"program": prog, "query": "", "limit": 500}
-        )["functions"]
-        temp_re = re.compile(r"\b(?:[a-z]{1,4}Var\d+|[a-z]?[uib]?Stack_[0-9a-f]+)\b")
-        found_func = found_temp = None
-        for fn in functions:
-            decompiled = ghidra_server.ok(
-                "decompile_function",
-                {"program": prog, "name_or_address": fn["name"]},
-            )["decompiled"]
-            renameable = {
-                v["name"] for v in ghidra_server.ok(
-                    "get_function_variables",
-                    {"program": prog, "name_or_address": fn["name"]},
-                )["variables"]
-            }
-            for token in temp_re.findall(decompiled):
-                if token not in renameable:  # a genuine non-committed temporary
-                    found_func, found_temp = fn["name"], token
-                    break
-            if found_temp:
-                break
+        # A decompiler temporary is a register or intermediate value the program database does
+        # not hold; naming one has to go through the decompiler's own view of the function.
+        found_func, found_temp = _find_decompiler_temporary(ghidra_server, prog)
         if found_temp is None:
             pytest.skip("No decompiler temporary present in the fixture binary")
 
@@ -832,12 +842,42 @@ class TestWriteOperations:
             {"program": prog,
              "name_or_address": found_func,
              "variable_name": found_temp,
-             "new_name": "renamed_temp"},
+             "new_name": "named_temp"},
+        )
+        if not resp["ok"]:
+            # Some values genuinely cannot be pinned to storage. That must be reported as a
+            # failure that names the value and points somewhere useful — never as a success.
+            error = resp["error"]
+            assert found_temp in error
+            assert "set_comment" in error
+            return
+
+        assert resp["result"]["kind"] == "temporary"
+        assert resp["result"]["name"] == "named_temp"
+        names = {
+            v["name"] for v in ghidra_server.ok(
+                "get_function_variables",
+                {"program": prog, "name_or_address": found_func},
+            )["variables"]
+        }
+        assert "named_temp" in names, "a reported rename must survive the next decompile"
+
+    def test_set_variable_retype_of_a_temporary_needs_a_name(
+            self, ghidra_server: GhidraClient, prog: str):
+        found_func, found_temp = _find_decompiler_temporary(ghidra_server, prog)
+        if found_temp is None:
+            pytest.skip("No decompiler temporary present in the fixture binary")
+
+        resp = ghidra_server.call(
+            "set_variable",
+            {"program": prog,
+             "name_or_address": found_func,
+             "variable_name": found_temp,
+             "type_name": "uint"},
         )
         assert resp["ok"] is False
         error = resp.get("error", "")
-        assert "decompiler temporary" in error
-        assert "get_function_variables" in error
+        assert "new_name" in error
         assert found_temp in error
 
     def test_set_function_prototype(

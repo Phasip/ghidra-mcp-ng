@@ -71,7 +71,7 @@ Set the data type and optionally the name of a specific function parameter by in
 
 ### `set_variable`
 
-Rename and/or retype one parameter or local variable in a function.
+Rename and/or retype one parameter, local, or decompiler temporary in a function.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|:--------:|---------|-------------|
