@@ -57,7 +57,7 @@ HOT_CORE = (
     "get_disassembly",
     "get_function_variables",
     "rename_function",
-    "rename_variable",
+    "set_variable",
     "set_comment",
     "run_script",
 )

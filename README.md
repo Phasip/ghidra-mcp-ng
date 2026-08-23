@@ -154,7 +154,7 @@ Supported field keys, and the tools they gate:
 | Key | Applies to |
 |---|---|
 | `function_name` | `rename_function` |
-| `variable_name` | `rename_variable`, `set_parameter_type`, `set_function_prototype` parameters |
+| `variable_name` | `set_variable`, `set_parameter_type`, `set_function_prototype` parameters |
 | `struct_name` | `create_struct` |
 | `struct_field_name` | `add_struct_field`, `replace_struct_field` |
 | `label_name` | `create_label` |

@@ -81,7 +81,7 @@ class TestHealth:
             "get_xrefs_to", "get_xrefs_from", "get_function_callees",
             "search_constant_references", "batch_tool_call",
             # WriteTools
-            "rename_function", "rename_variable", "rename_global", "create_label",
+            "rename_function", "set_variable", "rename_global", "create_label",
             "set_function_prototype", "set_parameter_type",
             "create_struct", "add_struct_field", "remove_struct_field", "replace_struct_field",
             "set_comment", "analyze_program", "import_binary",
@@ -686,7 +686,7 @@ class TestWriteOperations:
         )
         assert result["success"] is True
 
-    def test_rename_variable(self, ghidra_server: GhidraClient, prog: str):
+    def test_set_variable_renames(self, ghidra_server: GhidraClient, prog: str):
         # Get any variable from add() — Ghidra may model stack-spilled register
         # args as locals rather than formal parameters, so we do not filter by kind.
         vars_result = ghidra_server.ok(
@@ -699,28 +699,92 @@ class TestWriteOperations:
 
         new_name = "integration_test_renamed_param"
         result = ghidra_server.ok(
-            "rename_variable",
+            "set_variable",
             {"program": prog,
              "name_or_address": "add",
              "variable_name": original_name,
              "new_name": new_name},
         )
         assert result["success"] is True
-        assert result["new_name"] == new_name
+        assert result["name"] == new_name
 
         # Rename back to original
         ghidra_server.ok(
-            "rename_variable",
+            "set_variable",
             {"program": prog,
              "name_or_address": "add",
              "variable_name": new_name,
              "new_name": original_name},
         )
 
-    def test_rename_nonexistent_variable_reports_not_found(
+    def test_set_variable_retypes(self, ghidra_server: GhidraClient, prog: str):
+        variables = ghidra_server.ok(
+            "get_function_variables",
+            {"program": prog, "name_or_address": "add"},
+        )["variables"]
+        assert variables, "add() should have variables"
+        target = variables[0]
+        original_type = target["type"]
+
+        result = ghidra_server.ok(
+            "set_variable",
+            {"program": prog,
+             "name_or_address": "add",
+             "variable_name": target["name"],
+             "type_name": "uint"},
+        )
+        assert result["success"] is True
+        assert result["name"] == target["name"]
+        assert result["type_name"] == "uint"
+
+        current = {
+            v["name"]: v["type"] for v in ghidra_server.ok(
+                "get_function_variables",
+                {"program": prog, "name_or_address": "add"},
+            )["variables"]
+        }
+        assert current[target["name"]] == "uint"
+
+        ghidra_server.ok(
+            "set_variable",
+            {"program": prog, "name_or_address": "add",
+             "variable_name": target["name"], "type_name": original_type},
+        )
+
+    def test_set_variable_requires_a_change(
+            self, ghidra_server: GhidraClient, prog: str):
+        variables = ghidra_server.ok(
+            "get_function_variables",
+            {"program": prog, "name_or_address": "add"},
+        )["variables"]
+        resp = ghidra_server.call(
+            "set_variable",
+            {"program": prog, "name_or_address": "add",
+             "variable_name": variables[0]["name"]},
+        )
+        assert resp["ok"] is False
+        error = resp.get("error", "")
+        assert "new_name" in error and "type_name" in error
+
+    def test_set_variable_unknown_type_reports_it(
+            self, ghidra_server: GhidraClient, prog: str):
+        variables = ghidra_server.ok(
+            "get_function_variables",
+            {"program": prog, "name_or_address": "add"},
+        )["variables"]
+        resp = ghidra_server.call(
+            "set_variable",
+            {"program": prog, "name_or_address": "add",
+             "variable_name": variables[0]["name"],
+             "type_name": "NoSuchTypeXyz"},
+        )
+        assert resp["ok"] is False
+        assert "NoSuchTypeXyz" in resp.get("error", "")
+
+    def test_set_variable_nonexistent_reports_not_found(
             self, ghidra_server: GhidraClient, prog: str):
         resp = ghidra_server.call(
-            "rename_variable",
+            "set_variable",
             {"program": prog,
              "name_or_address": "add",
              "variable_name": "definitely_not_a_real_variable_xyz",
@@ -764,7 +828,7 @@ class TestWriteOperations:
             pytest.skip("No decompiler temporary present in the fixture binary")
 
         resp = ghidra_server.call(
-            "rename_variable",
+            "set_variable",
             {"program": prog,
              "name_or_address": found_func,
              "variable_name": found_temp,
@@ -898,7 +962,7 @@ class TestBatchedWrites:
         )
         return [v["name"] for v in result.get("variables", [])]
 
-    def test_batch_rename_variable(self, ghidra_server: GhidraClient, prog: str):
+    def test_batch_set_variable(self, ghidra_server: GhidraClient, prog: str):
         originals = self._variable_names(ghidra_server, prog)
         assert originals, "add() should have variables"
         renamed = [f"batch_renamed_{i}" for i in range(len(originals))]
@@ -906,7 +970,7 @@ class TestBatchedWrites:
         result = ghidra_server.ok(
             "batch_tool_call",
             {
-                "tool": "rename_variable",
+                "tool": "set_variable",
                 "calls": [
                     {"program": prog, "name_or_address": "add",
                      "variable_name": old, "new_name": new}
@@ -914,7 +978,7 @@ class TestBatchedWrites:
                 ],
             },
         )
-        assert result["tool"] == "rename_variable"
+        assert result["tool"] == "set_variable"
         assert result["count"] == len(originals)
         assert result["failed"] == 0
         assert all(item["ok"] for item in result["results"])
@@ -924,7 +988,7 @@ class TestBatchedWrites:
         restore = ghidra_server.ok(
             "batch_tool_call",
             {
-                "tool": "rename_variable",
+                "tool": "set_variable",
                 "calls": [
                     {"program": prog, "name_or_address": "add",
                      "variable_name": new, "new_name": old}
@@ -940,7 +1004,7 @@ class TestBatchedWrites:
         result = ghidra_server.ok(
             "batch_tool_call",
             {
-                "tool": "rename_variable",
+                "tool": "set_variable",
                 "calls": [
                     {"program": prog, "name_or_address": "add",
                      "variable_name": "no_such_variable_xyz", "new_name": "never_applied"},
@@ -956,7 +1020,7 @@ class TestBatchedWrites:
         assert "batch_partial_ok" in self._variable_names(ghidra_server, prog)
 
         ghidra_server.ok(
-            "rename_variable",
+            "set_variable",
             {"program": prog, "name_or_address": "add",
              "variable_name": "batch_partial_ok", "new_name": original},
         )
@@ -996,7 +1060,7 @@ class TestBatchedWrites:
         assert err["ok"] is False
         assert "not allowlisted" in err.get("error", "")
         # The message must name the alternatives so the agent can self-correct.
-        assert "rename_variable" in err.get("error", "")
+        assert "set_variable" in err.get("error", "")
 
 
 # ---------------------------------------------------------------------------

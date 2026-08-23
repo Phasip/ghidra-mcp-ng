@@ -229,7 +229,7 @@ public class RulesEngine {
                         " auto-named variables; the limit for a " + commentType + " comment is " +
                         rule.getMax_auto_named_variables() + ". " +
                         "Call get_function_variables on '" + containingFunctionName + "' to see them, " +
-                        "then rename_variable (batch them with batch_tool_call).");
+                        "then set_variable (batch them with batch_tool_call).");
             }
         }
     }

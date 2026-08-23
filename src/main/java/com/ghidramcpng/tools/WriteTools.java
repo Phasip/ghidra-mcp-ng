@@ -108,32 +108,65 @@ public class WriteTools {
     }
 
     @POST
-    @Path("/rename_variable")
-    @Operation(tags = "Annotation", operationId = "rename_variable", summary = "Rename a local variable or parameter in a function.")
-    @ApiResponse(responseCode = "200", description = "Rename variable result",
-            content = @Content(schema = @Schema(implementation = RenameVariableResponse.class)))
-    public RenameVariableResponse renameVariable(
+    @Path("/set_variable")
+    @Operation(tags = "Annotation", operationId = "set_variable",
+            summary = "Rename and/or retype one parameter or local variable in a function.")
+    @ApiResponse(responseCode = "200", description = "Set variable result",
+            content = @Content(schema = @Schema(implementation = SetVariableResponse.class)))
+    public SetVariableResponse setVariable(
             @RequestBody(
                     required = true,
-                    description = "Rename variable request",
-                    content = @Content(schema = @Schema(implementation = RenameVariableRequest.class)))
+                    description = "Set variable request",
+                    content = @Content(schema = @Schema(implementation = SetVariableRequest.class)))
             JsonObject request) {
         String programName = required(request, "program");
         String funcRef = required(request, "name_or_address");
         String variableName = required(request, "variable_name");
-        String newName = requireMaxLength(required(request, "new_name"), "new_name", MAX_NAME_LENGTH);
+        String newName = optional(request, "new_name", null);
+        String typeName = optional(request, "type_name", null);
 
-        rules.validate("variable_name", newName);
+        if (newName == null && typeName == null) {
+            throw new IllegalArgumentException(
+                    "Nothing to change for variable '" + variableName + "': pass 'new_name', " +
+                    "'type_name', or both.");
+        }
+        if (newName != null) {
+            requireMaxLength(newName, "new_name", MAX_NAME_LENGTH);
+            rules.validate("variable_name", newName);
+        }
 
         Program program = openProgram(programName);
         Function func = findFunction(program, funcRef);
+        DataType dataType = typeName != null ? findDataType(program, typeName) : null;
         // Resolve (and diagnose failures) before opening the write transaction so the
         // diagnostic decompile in findVariable does not run inside it.
         Variable found = findVariable(program, func, variableName);
-        runTransaction(program, "Rename variable: " + variableName + " -> " + newName,
-                () -> found.setName(newName, SourceType.USER_DEFINED));
 
-        return new RenameVariableResponse(true, newName);
+        runTransaction(program, "Set variable: " + func.getName() + "." + variableName, () -> {
+            if (dataType != null) {
+                try {
+                    found.setDataType(dataType, SourceType.USER_DEFINED);
+                } catch (InvalidInputException e) {
+                    throw new IllegalArgumentException(
+                            "Cannot apply type '" + typeName + "' to '" + variableName + "' in '" +
+                            func.getName() + "': " + e.getMessage());
+                }
+            }
+            if (newName != null) {
+                try {
+                    found.setName(newName, SourceType.USER_DEFINED);
+                } catch (DuplicateNameException e) {
+                    throw new IllegalArgumentException(
+                            "A variable named '" + newName + "' already exists in function '" +
+                            func.getName() + "'. Use a unique name.");
+                }
+            }
+        });
+
+        return new SetVariableResponse(true,
+                newName != null ? newName : variableName,
+                found.getDataType() != null ? found.getDataType().getName() : null,
+                found instanceof Parameter ? "parameter" : "local");
     }
 
     @POST
@@ -923,15 +956,17 @@ public class WriteTools {
             String new_name) {
     }
 
-    public record RenameVariableRequest(
+    public record SetVariableRequest(
             @Schema(description = "Program name; see list_project_files.", requiredMode = Schema.RequiredMode.REQUIRED)
             String program,
             @Schema(description = "Function name (case-sensitive) or 0x-prefixed hex entry point.", requiredMode = Schema.RequiredMode.REQUIRED)
             String name_or_address,
-            @Schema(description = "Current variable or parameter name", requiredMode = Schema.RequiredMode.REQUIRED)
+            @Schema(description = "Current variable or parameter name; see get_function_variables.", requiredMode = Schema.RequiredMode.REQUIRED)
             String variable_name,
-            @Schema(description = "New variable name (max 256 chars)", requiredMode = Schema.RequiredMode.REQUIRED)
-            String new_name) {
+            @Schema(description = "New variable name (max 256 chars); omit to keep the current one.")
+            String new_name,
+            @Schema(description = "Data type to assign, e.g. int, char *, MyStruct *; omit to keep the current one.")
+            String type_name) {
     }
 
     public record PrototypeParameterRequest(
@@ -1038,7 +1073,8 @@ public class WriteTools {
     public record RenameFunctionResponse(boolean success, String new_name) {
     }
 
-    public record RenameVariableResponse(boolean success, String new_name) {
+    public record SetVariableResponse(boolean success, String name, String type_name,
+            String kind) {
     }
 
     public record RenameGlobalRequest(

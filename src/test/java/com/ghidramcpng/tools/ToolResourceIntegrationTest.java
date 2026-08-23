@@ -885,14 +885,14 @@ class ToolResourceIntegrationTest {
     }
 
     @Test
-    void renameVariable_changesVariableName() {
+    void setVariable_changesVariableName() {
         ReadTools.GetFunctionVariablesResponse before =
                 readTools.getFunctionVariables(programName, FN_ADD);
         assertFalse(before.variables().isEmpty(), "add() must have at least one variable to rename");
         String originalName = before.variables().get(0).name();
         assertNotNull(originalName, "Variable must have a name before renaming");
 
-        WriteTools.RenameVariableResponse response = writeTools.renameVariable(json(
+        WriteTools.SetVariableResponse response = writeTools.setVariable(json(
                 "program", programName,
                 "name_or_address", FN_ADD,
                 "variable_name", originalName,
@@ -905,9 +905,9 @@ class ToolResourceIntegrationTest {
     }
 
     @Test
-    void renameVariable_unknownFunction_throwsIllegalArgument() {
+    void setVariable_unknownFunction_throwsIllegalArgument() {
         assertThrows(IllegalArgumentException.class,
-                () -> writeTools.renameVariable(json(
+                () -> writeTools.setVariable(json(
                         "program", programName,
                         "name_or_address", "__no_such_fn__",
                         "variable_name", "x",
@@ -1588,13 +1588,13 @@ class ToolResourceIntegrationTest {
     }
 
     @Test
-    void renameVariable_persistsAfterReopen() throws Exception {
+    void setVariable_persistsAfterReopen() throws Exception {
         ReadTools.GetFunctionVariablesResponse before =
                 readTools.getFunctionVariables(programName, FN_ADD);
         assertFalse(before.variables().isEmpty(), "add() must have at least one variable");
         String originalName = before.variables().get(0).name();
 
-        writeTools.renameVariable(json(
+        writeTools.setVariable(json(
                 "program", programName,
                 "name_or_address", FN_ADD,
                 "variable_name", originalName,

@@ -117,7 +117,7 @@ comments:
     require_named_function: true
     message: >
       A plate comment is a 1-2 line pointer, not the analysis itself. Record what you found
-      by renaming: rename_function, rename_variable, set_function_prototype, create_struct.
+      by renaming: rename_function, set_variable, set_function_prototype, create_struct.
       If it does not fit in 300 characters it belongs in names and types, not in prose.
 
   PRE:

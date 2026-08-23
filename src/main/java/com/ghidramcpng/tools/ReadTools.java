@@ -256,7 +256,7 @@ public class ReadTools {
         if (!BATCH_ALLOWLIST.contains(tool)) {
             throw new IllegalArgumentException(
                 "Tool '" + tool + "' is not allowlisted for batch_tool_call. " +
-                "Pass the bare operationId (e.g. \"rename_variable\"), not a namespaced MCP tool name. " +
+                "Pass the bare operationId (e.g. \"set_variable\"), not a namespaced MCP tool name. " +
                 "Allowed tools: " + String.join(", ", BATCH_ALLOWLIST) + ".");
         }
 
@@ -329,11 +329,11 @@ public class ReadTools {
             "remove_struct_field",
             "rename_function",
             "rename_global",
-            "rename_variable",
             "replace_struct_field",
             "set_comment",
             "set_function_prototype",
             "set_parameter_type",
+            "set_variable",
             "check_connection",
             "decompile_function",
             "get_address_info",
@@ -1606,11 +1606,11 @@ public class ReadTools {
             // Write tools take the request body verbatim, so a batch item is that same body —
             // there is nothing to unpack and no second spelling of any parameter to keep in sync.
             case "rename_function" -> writeTools.renameFunction(args);
-            case "rename_variable" -> writeTools.renameVariable(args);
             case "rename_global" -> writeTools.renameGlobal(args);
             case "create_label" -> writeTools.createLabel(args);
             case "set_function_prototype" -> writeTools.setFunctionPrototype(args);
             case "set_parameter_type" -> writeTools.setParameterType(args);
+            case "set_variable" -> writeTools.setVariable(args);
             case "create_struct" -> writeTools.createStruct(args);
             case "add_struct_field" -> writeTools.addStructField(args);
             case "remove_struct_field" -> writeTools.removeStructField(args);

@@ -34,17 +34,6 @@ Rename a global symbol (data, label, or import) by name or hex address.
 | `name_or_address` | string | yes |  | Current name or 0x-prefixed hex address of the global symbol |
 | `new_name` | string | yes |  | New symbol name (max 256 chars) |
 
-### `rename_variable`
-
-Rename a local variable or parameter in a function.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|:--------:|---------|-------------|
-| `program` | string | yes |  | Program name; see list_project_files. |
-| `name_or_address` | string | yes |  | Function name (case-sensitive) or 0x-prefixed hex entry point. |
-| `variable_name` | string | yes |  | Current variable or parameter name |
-| `new_name` | string | yes |  | New variable name (max 256 chars) |
-
 ### `set_comment`
 
 Set a comment on a code unit at the specified address.
@@ -79,6 +68,18 @@ Set the data type and optionally the name of a specific function parameter by in
 | `parameter_index` | integer (int32) | yes |  | 0-based parameter index |
 | `type_name` | string | yes |  | Data type to assign |
 | `new_name` | string |  |  | Optional new parameter name (max 256 chars) |
+
+### `set_variable`
+
+Rename and/or retype one parameter or local variable in a function.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|:--------:|---------|-------------|
+| `program` | string | yes |  | Program name; see list_project_files. |
+| `name_or_address` | string | yes |  | Function name (case-sensitive) or 0x-prefixed hex entry point. |
+| `variable_name` | string | yes |  | Current variable or parameter name; see get_function_variables. |
+| `new_name` | string |  |  | New variable name (max 256 chars); omit to keep the current one. |
+| `type_name` | string |  |  | Data type to assign, e.g. int, char *, MyStruct *; omit to keep the current one. |
 
 ## Code
 
