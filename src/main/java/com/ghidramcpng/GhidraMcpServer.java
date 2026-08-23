@@ -2,6 +2,7 @@ package com.ghidramcpng;
 
 import com.ghidramcpng.mcp.HttpApiServer;
 import com.ghidramcpng.program.ProgramManager;
+import com.ghidramcpng.program.TemporaryNames;
 import com.ghidramcpng.rules.RulesEngine;
 import com.ghidramcpng.tools.ReadTools;
 import com.ghidramcpng.tools.ScriptTool;
@@ -164,8 +165,10 @@ public class GhidraMcpServer implements GhidraLaunchable {
         // Register tools
 
         ProgramManager mgr = new ProgramManager(ghidraProject);
-        WriteTools writeTools = new WriteTools(mgr, rules);
-        ReadTools readTools = new ReadTools(mgr, rules.getDecompileTimeoutSeconds(), writeTools);
+        TemporaryNames temporaryNames = new TemporaryNames();
+        WriteTools writeTools = new WriteTools(mgr, rules, temporaryNames);
+        ReadTools readTools = new ReadTools(mgr, rules.getDecompileTimeoutSeconds(), writeTools,
+                temporaryNames);
         ScriptTool scriptTool = new ScriptTool(mgr);
 
         System.err.printf("[ghidra-mcp-ng] %d HTTP tool endpoints available%n",

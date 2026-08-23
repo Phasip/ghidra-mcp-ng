@@ -12,6 +12,7 @@ import com.ghidramcpng.model.StructField;
 import com.ghidramcpng.model.VariableEntry;
 import com.ghidramcpng.model.XrefEntry;
 import com.ghidramcpng.program.ProgramManager;
+import com.ghidramcpng.program.TemporaryNames;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import ghidra.program.model.address.AddressIterator;
@@ -23,6 +24,7 @@ import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.Program;
+import ghidra.app.decompiler.DecompileResults;
 import ghidra.program.model.pcode.HighFunction;
 import ghidra.program.model.pcode.HighSymbol;
 import ghidra.program.model.mem.Memory;
@@ -64,7 +66,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
-import static com.ghidramcpng.tools.ToolHelpers.decompileFresh;
 import static com.ghidramcpng.tools.ToolHelpers.findDataType;
 import static com.ghidramcpng.tools.ToolHelpers.findFunction;
 import static com.ghidramcpng.tools.ToolHelpers.findSymbolAddress;
@@ -93,11 +94,15 @@ public class ReadTools {
     private final int decompileTimeoutSeconds;
     /** Batch dispatch target for the write tools; batch_tool_call is the only user. */
     private final WriteTools writeTools;
+    /** Records the temporary names each decompile reports, for set_variable to check against. */
+    private final TemporaryNames temporaryNames;
 
-    public ReadTools(ProgramManager mgr, int decompileTimeoutSeconds, WriteTools writeTools) {
+    public ReadTools(ProgramManager mgr, int decompileTimeoutSeconds, WriteTools writeTools,
+            TemporaryNames temporaryNames) {
         this.mgr = mgr;
         this.decompileTimeoutSeconds = decompileTimeoutSeconds;
         this.writeTools = writeTools;
+        this.temporaryNames = temporaryNames;
     }
 
     @GET
@@ -636,6 +641,7 @@ public class ReadTools {
                         variables.add(VariableEntry.fromTemporary(symbol));
                     }
                 }
+                temporaryNames.record(program.getName(), function.getEntryPoint(), highFunction);
             }
         }
         return new GetFunctionVariablesResponse(
@@ -666,7 +672,12 @@ public class ReadTools {
         int effectiveTimeoutSeconds = validatedTimeoutSeconds > 0
                 ? validatedTimeoutSeconds
                 : decompileTimeoutSeconds;
-        String code = decompileFresh(program, function, effectiveTimeoutSeconds);
+        DecompileResults results =
+                ToolHelpers.decompileFreshWithResults(program, function, effectiveTimeoutSeconds);
+        if (results.getHighFunction() != null) {
+            temporaryNames.record(program.getName(), function.getEntryPoint(), results.getHighFunction());
+        }
+        String code = results.getDecompiledFunction().getC();
         return new DecompileFunctionResponse(
             function.getName(),
             function.getEntryPoint(),

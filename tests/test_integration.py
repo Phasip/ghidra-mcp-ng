@@ -890,6 +890,86 @@ class TestWriteOperations:
         assert "new_name" in error
         assert found_temp in error
 
+    def _temporaries(self, client: GhidraClient, prog: str, func: str) -> list[str]:
+        """Auto-named temporaries of one function, in the decompiler's own numbering order."""
+        variables = client.ok(
+            "get_function_variables", {"program": prog, "name_or_address": func},
+        )["variables"]
+        names = [
+            v["name"] for v in variables
+            if v["kind"] == "temporary" and _TEMP_NAME_RE.fullmatch(v["name"])
+        ]
+        return sorted(names, key=lambda n: int(re.search(r"\d+$", n).group()))
+
+    def test_naming_a_temporary_does_not_block_the_next_valid_rename(
+            self, ghidra_server: GhidraClient, prog: str):
+        # Naming the last-numbered temporary renumbers nothing, so the one before it still
+        # means what it did. A staleness check that refused this would be worse than useless.
+        temporaries = self._temporaries(ghidra_server, prog, "register_churn")
+        if len(temporaries) < 2:
+            pytest.skip("register_churn has too few temporaries for a two-step rename")
+
+        first = ghidra_server.call(
+            "set_variable",
+            {"program": prog, "name_or_address": "register_churn",
+             "variable_name": temporaries[-1], "new_name": "seq_last"},
+        )
+        if not first["ok"]:
+            pytest.skip(f"the last temporary could not be named: {first['error']}")
+
+        second = ghidra_server.call(
+            "set_variable",
+            {"program": prog, "name_or_address": "register_churn",
+             "variable_name": temporaries[-2], "new_name": "seq_second_last"},
+        )
+        assert second["ok"], (
+            f"renaming {temporaries[-2]} is still valid after naming {temporaries[-1]}, "
+            f"but was refused: {second.get('error')}"
+        )
+
+    def test_rename_of_a_renumbered_temporary_is_refused(
+            self, ghidra_server: GhidraClient, prog: str):
+        # Naming an early temporary renumbers every later one, so a second rename planned from
+        # the same reading would land on a different value. That must fail, not succeed quietly.
+        temporaries = self._temporaries(ghidra_server, prog, "register_churn2")
+        if len(temporaries) < 2:
+            pytest.skip("register_churn2 has too few temporaries to renumber")
+
+        first = ghidra_server.call(
+            "set_variable",
+            {"program": prog, "name_or_address": "register_churn2",
+             "variable_name": temporaries[0], "new_name": "stale_first"},
+        )
+        if not first["ok"]:
+            pytest.skip(f"the first temporary could not be named: {first['error']}")
+
+        stale = ghidra_server.call(
+            "set_variable",
+            {"program": prog, "name_or_address": "register_churn2",
+             "variable_name": temporaries[1], "new_name": "stale_second"},
+        )
+        assert stale["ok"] is False, (
+            f"{temporaries[1]} was renumbered by naming {temporaries[0]} and must not be renamed "
+            "from the stale reading"
+        )
+        error = stale["error"]
+        assert "no longer refers" in error
+        # The fix is only actionable if the error says what the value is called now, and it must
+        # never suggest the name that took its place — that is a different value.
+        assert "now called" in error or "no longer a variable" in error
+        assert "Did you mean" not in error
+        assert "register_churn2" in error
+
+        # Re-reading clears it: the check is against a stale reading, not a lock on the function.
+        current = self._temporaries(ghidra_server, prog, "register_churn2")
+        if current:
+            retry = ghidra_server.call(
+                "set_variable",
+                {"program": prog, "name_or_address": "register_churn2",
+                 "variable_name": current[0], "new_name": "after_reread"},
+            )
+            assert retry["ok"] or "did not keep it" in retry["error"], retry
+
     def test_set_function_prototype(
             self, ghidra_server: GhidraClient, prog: str):
         result = ghidra_server.ok(

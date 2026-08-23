@@ -2,6 +2,7 @@ package com.ghidramcpng.tools;
 
 import com.ghidramcpng.mcp.ApiSupport;
 import com.ghidramcpng.program.ProgramManager;
+import com.ghidramcpng.program.TemporaryNames;
 import com.ghidramcpng.rules.RulesEngine;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -68,10 +69,13 @@ public class WriteTools {
 
     private final ProgramManager mgr;
     private final RulesEngine rules;
+    /** What the caller last read, so a rename of a renumbered temporary can be refused. */
+    private final TemporaryNames temporaryNames;
 
-    public WriteTools(ProgramManager mgr, RulesEngine rules) {
+    public WriteTools(ProgramManager mgr, RulesEngine rules, TemporaryNames temporaryNames) {
         this.mgr = mgr;
         this.rules = rules;
+        this.temporaryNames = temporaryNames;
     }
 
     @POST
@@ -938,7 +942,12 @@ public class WriteTools {
     private SetVariableResponse setTemporary(Program program, Function func, String variableName,
             String newName, DataType dataType, String typeName) {
         int timeoutSeconds = rules.getDecompileTimeoutSeconds();
-        HighSymbol symbol = requireHighSymbol(program, func, variableName, timeoutSeconds);
+        HighFunction highFunction = requireHighFunction(program, func, timeoutSeconds);
+        HighSymbol symbol = findHighSymbolIn(highFunction, variableName);
+        requireNameStillMeansWhatWasRead(program, func, highFunction, symbol, variableName);
+        if (symbol == null) {
+            throw notFound(highFunction, func, variableName);
+        }
 
         if (newName == null && !symbol.isNameLocked()) {
             throw new IllegalArgumentException(
@@ -1024,30 +1033,93 @@ public class WriteTools {
         return null;
     }
 
-    /** As {@link #findHighSymbol}, but reports what the decompiler does show when the name is absent. */
-    private static HighSymbol requireHighSymbol(Program program, Function func, String name,
-            int timeoutSeconds) {
-        DecompileResults results =
-                ToolHelpers.decompileFreshWithResults(program, func, timeoutSeconds);
-        HighFunction highFunction = results.getHighFunction();
-        List<String> known = new ArrayList<>();
-        if (highFunction != null) {
-            Iterator<HighSymbol> symbols = highFunction.getLocalSymbolMap().getSymbols();
-            while (symbols.hasNext()) {
-                HighSymbol symbol = symbols.next();
-                if (name.equals(symbol.getName())) {
-                    return symbol;
-                }
-                known.add(symbol.getName());
+    /** The decompiler's symbol named {@code name} in an already-decompiled function, or null. */
+    private static HighSymbol findHighSymbolIn(HighFunction highFunction, String name) {
+        Iterator<HighSymbol> symbols = highFunction.getLocalSymbolMap().getSymbols();
+        while (symbols.hasNext()) {
+            HighSymbol symbol = symbols.next();
+            if (name.equals(symbol.getName())) {
+                return symbol;
             }
         }
+        return null;
+    }
+
+    /** Reports a name the decompiler does not show, against the names it does. */
+    private static IllegalArgumentException notFound(HighFunction highFunction, Function func,
+            String name) {
+        List<String> known = new ArrayList<>();
+        Iterator<HighSymbol> symbols = highFunction.getLocalSymbolMap().getSymbols();
+        while (symbols.hasNext()) {
+            known.add(symbols.next().getName());
+        }
         String suggestion = ApiSupport.suggestClosest(name, known);
-        throw new IllegalArgumentException(
+        return new IllegalArgumentException(
                 "Variable '" + name + "' not found in function '" + func.getName() + "'. " +
                 "Names are case-sensitive. " +
                 (suggestion != null ? "Did you mean '" + suggestion + "'? " : "") +
                 "Use get_function_variables to list the parameters, locals and temporaries with " +
                 "their exact current names.");
+    }
+
+    /**
+     * Refuses a write to a decompiler-invented name that no longer refers to the value the caller
+     * last read under it. Naming one temporary renumbers the rest, so the second write of a pair
+     * planned from a single decompile would land on a different value — successfully, and without
+     * any sign that it went to the wrong place. Renumbering can also retire the name outright,
+     * which is why this runs before the name is reported as missing: "did you mean uVar1?" would
+     * be pointing at exactly the wrong value. Only a name whose meaning has demonstrably changed
+     * is refused; a name that still means what it meant, and a function that was never read here,
+     * both pass through.
+     */
+    private void requireNameStillMeansWhatWasRead(Program program, Function func,
+            HighFunction highFunction, HighSymbol symbol, String variableName) {
+        if (symbol != null && symbol.isNameLocked()) {
+            return; // A name the database holds does not renumber.
+        }
+        String asRead = temporaryNames.lastRead(
+                program.getName(), func.getEntryPoint(), variableName);
+        if (asRead == null) {
+            return;
+        }
+        String now = symbol != null ? TemporaryNames.identityOf(symbol) : null;
+        if (asRead.equals(now)) {
+            return;
+        }
+        throw new IllegalArgumentException(
+                "'" + variableName + "' in function '" + func.getName() + "' no longer refers to " +
+                "the value it did when you last read this function: " +
+                (now != null ? "it now refers to " + now + ", not " + asRead
+                             : "the name is gone from the current decompile, where it meant " + asRead) +
+                ". Naming one temporary makes Ghidra renumber the rest. " +
+                whereThatValueWentNow(highFunction, asRead) +
+                " Decompile '" + func.getName() + "' again and work from the new names.");
+    }
+
+    /** Tells the caller what the value it meant is called now, which is the whole fix. */
+    private static String whereThatValueWentNow(HighFunction highFunction, String identity) {
+        Iterator<HighSymbol> symbols = highFunction.getLocalSymbolMap().getSymbols();
+        while (symbols.hasNext()) {
+            HighSymbol candidate = symbols.next();
+            if (identity.equals(TemporaryNames.identityOf(candidate))) {
+                return "The value you meant is now called '" + candidate.getName() + "'.";
+            }
+        }
+        return "The value you meant is no longer a variable of its own.";
+    }
+
+    /** The decompiler's model of {@code func}, which is where its temporaries live. */
+    private static HighFunction requireHighFunction(Program program, Function func,
+            int timeoutSeconds) {
+        HighFunction highFunction = ToolHelpers
+                .decompileFreshWithResults(program, func, timeoutSeconds)
+                .getHighFunction();
+        if (highFunction == null) {
+            throw new IllegalStateException(
+                    "The decompiler produced no variable model for function '" + func.getName() +
+                    "', so its variables cannot be addressed. Re-run auto-analysis on the program.");
+        }
+        return highFunction;
     }
 
     public record RenameFunctionRequest(

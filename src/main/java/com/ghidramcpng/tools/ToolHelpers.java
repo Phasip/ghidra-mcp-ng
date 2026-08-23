@@ -632,22 +632,6 @@ public final class ToolHelpers {
     }
 
     /**
-     * Decompile a single function using a freshly created {@link DecompInterface}.
-     * The interface is disposed before returning. For batch decompilation use
-     * {@link #openDecompiler} + {@link #decompileWith} to share one instance.
-     *
-     * @param timeoutSeconds maximum decompilation time in seconds (must be &gt; 0)
-     */
-    public static String decompileFresh(Program program, Function function, int timeoutSeconds) {
-        DecompInterface decompiler = openDecompiler(program);
-        try {
-            return decompileWith(decompiler, function, timeoutSeconds);
-        } finally {
-            decompiler.dispose();
-        }
-    }
-
-    /**
      * Decompile a single function using a freshly created {@link DecompInterface} and return
      * the full {@link DecompileResults} for callers that need the {@link ghidra.program.model.pcode.HighFunction}.
      * The interface is disposed before returning.

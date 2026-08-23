@@ -7,6 +7,7 @@ import com.ghidramcpng.model.StringEntry;
 import com.ghidramcpng.model.StructField;
 import com.ghidramcpng.model.VariableEntry;
 import com.ghidramcpng.program.ProgramManager;
+import com.ghidramcpng.program.TemporaryNames;
 import com.ghidramcpng.rules.RulesEngine;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -140,8 +141,8 @@ class ToolResourceIntegrationTest {
         importedProgram = null;
 
         programManager = new ProgramManager(ghidraProject);
-        writeTools = new WriteTools(programManager, RulesEngine.load((File) null));
-        readTools = new ReadTools(programManager, 60, writeTools);
+        writeTools = new WriteTools(programManager, RulesEngine.load((File) null), new TemporaryNames());
+        readTools = new ReadTools(programManager, 60, writeTools, new TemporaryNames());
         scriptTool = new ScriptTool(programManager, extensionScriptsDir);
     }
 
@@ -323,7 +324,7 @@ class ToolResourceIntegrationTest {
         Path rulesFile = Files.createTempFile("rules_", ".yaml");
         Files.writeString(rulesFile, rulesYaml, StandardCharsets.UTF_8);
         try {
-            return new WriteTools(programManager, RulesEngine.load(rulesFile.toFile()));
+            return new WriteTools(programManager, RulesEngine.load(rulesFile.toFile()), new TemporaryNames());
         } finally {
             Files.deleteIfExists(rulesFile);
         }
@@ -1568,8 +1569,8 @@ class ToolResourceIntegrationTest {
     private void reopenManager() throws Exception {
         programManager.closeAll();
         programManager = new ProgramManager(ghidraProject);
-        writeTools = new WriteTools(programManager, RulesEngine.load((File) null));
-        readTools = new ReadTools(programManager, 60, writeTools);
+        writeTools = new WriteTools(programManager, RulesEngine.load((File) null), new TemporaryNames());
+        readTools = new ReadTools(programManager, 60, writeTools, new TemporaryNames());
     }
 
     @Test

@@ -1,7 +1,7 @@
 /*
  * test_target.c — Minimal C binary for ghidra-mcp-ng integration tests.
  *
- * Functions:   add, multiply, compute, main, call_via_ptr, register_churn, check_64bit_magic
+ * Functions:   add, multiply, compute, main, call_via_ptr, register_churn, register_churn2, check_64bit_magic
  * Call graph:  main -> compute -> add
  *              main -> compute -> multiply -> add
  *              call_via_ptr -> add (via function pointer — creates DATA ref to add)
@@ -61,6 +61,20 @@ int main(int argc, char *argv[]) {
  * different code path than parameters and stack locals — this is the fixture's only source
  * of them.
  */
+/* A second one, so a test that consumes register_churn's temporaries does not starve
+ * the next test of them. */
+__attribute__((optimize("O2")))
+int register_churn2(int seed, int count) {
+    int acc = seed ^ 0x5a;
+    int i;
+    for (i = 0; i < count; i++) {
+        int scaled = add(acc, i * 7);
+        int mixed = multiply(scaled, 3) ^ acc;
+        acc = mixed - scaled;
+    }
+    return acc + i;
+}
+
 __attribute__((optimize("O2")))
 int register_churn(int seed, int count) {
     int acc = seed;
