@@ -116,6 +116,14 @@ class TestHealth:
         # rather than a literal, so adding a tool cannot leave this quietly wrong.
         assert h["tools"] == len(ghidra_server.tools())
 
+    def test_health_identifies_the_server_process(self, ghidra_server: GhidraClient):
+        # bridge.py caches the generated schema and re-fetches it when this changes; without
+        # it a rebuilt server keeps being described by the schema of the one it replaced.
+        started_at = ghidra_server.health().get("started_at")
+        assert started_at, "health must identify the running process"
+        assert started_at == ghidra_server.health()["started_at"], \
+            "the identity must be stable while the process is"
+
     def test_tools_list_contains_expected_tools(self, ghidra_server: GhidraClient):
         tools = ghidra_server.tools()
         names = {t["name"] for t in tools}

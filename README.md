@@ -263,13 +263,18 @@ comments, scripts — plus three discovery tools:
 | Tool | Purpose |
 |---|---|
 | `list_tools` | Browse the rest, grouped by category (`Annotation`, `Code`, `Cross-references`, `Data types`, `Functions`, `Program`, `Scripting`, `Symbols and memory`) |
-| `describe_tool` | Fetch one tool's full parameter schema on demand |
-| `call_tool` | Run any tool by name, listed or not |
+| `describe_tool` | Fetch one tool's full parameter schema on demand (`tool_name`) |
+| `call_tool` | Run any tool by name, listed or not (`tool_name` + `arguments`) |
 
 Everything remains reachable — an unlisted tool is one `call_tool` away, and the direct HTTP
 API is unaffected. Categories come from the `tags` field on each tool's `@Operation`
 annotation, which is also what groups `TOOLS.md`. To change what is listed up front, edit
 `HOT_CORE` in `bridge.py`.
+
+The schema those three answer from is the running server's own `/openapi.json`, cached per
+server process: `/health` carries a `started_at` that changes on every start, and the bridge
+re-fetches when it does. Without that, a rebuilt-and-restarted server keeps being described by
+the schema of the one it replaced, and `describe_tool` advertises fields the live server rejects.
 
 ### Specialized analyses are scripts, not tools
 

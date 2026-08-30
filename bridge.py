@@ -3,8 +3,9 @@
 bridge.py — Minimal MCP bridge for ghidra-mcp-ng.
 
 Translates MCP JSON-RPC 2.0 (stdio) to the Ghidra HTTP REST API by fetching
-the server's OpenAPI schema at startup and using it to build the MCP tool list
-and dispatch every tool call. No tool definitions are hardcoded here.
+the server's OpenAPI schema and using it to build the MCP tool list and dispatch
+every tool call. No tool definitions are hardcoded here; the schema is re-fetched
+whenever the server process it came from has been replaced.
 
 Tools are exposed progressively rather than all at once. `tools/list` returns only
 the always-useful core (HOT_CORE below) plus three discovery tools; every other
@@ -27,6 +28,8 @@ MCP client config (mcp-config.json):
 
 Requirements: Python 3.8+, stdlib only.
 """
+
+from __future__ import annotations
 
 import sys
 import json
@@ -246,12 +249,12 @@ def _meta_tools(ops: dict[str, dict]) -> list[dict]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "name": {
+                    "tool_name": {
                         "type": "string",
-                        "description": "Tool name, e.g. from list_tools.",
+                        "description": "Tool to describe, e.g. from list_tools.",
                     },
                 },
-                "required": ["name"],
+                "required": ["tool_name"],
             },
         },
         {
@@ -263,16 +266,16 @@ def _meta_tools(ops: dict[str, dict]) -> list[dict]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "name": {
+                    "tool_name": {
                         "type": "string",
-                        "description": "Tool name to run, e.g. from list_tools.",
+                        "description": "Tool to run, e.g. from list_tools.",
                     },
                     "arguments": {
                         "type": "object",
                         "description": "That tool's arguments; see describe_tool.",
                     },
                 },
-                "required": ["name"],
+                "required": ["tool_name"],
             },
         },
     ]
@@ -296,7 +299,35 @@ def _unknown_tool(name: str, ops: dict[str, dict]) -> ValueError:
     return ValueError(f"Unknown tool: '{name}'. {hint}")
 
 
+# What each discovery tool accepts. They are implemented here rather than on the server, so the
+# server's unknown-field filter never sees them — this is the same check, in the only place that
+# can make it.
+_DISCOVERY_ARGS = {
+    "list_tools": ("category",),
+    "describe_tool": ("tool_name",),
+    "call_tool": ("tool_name", "arguments"),
+}
+
+
+def _reject_unknown_arguments(name: str, arguments: dict) -> None:
+    """Refuse an argument the discovery tool does not declare, listing the ones it does."""
+    allowed = _DISCOVERY_ARGS[name]
+    unknown = [key for key in arguments if key not in allowed]
+    if not unknown:
+        return
+    message = (
+        "Unknown field" + ("s " if len(unknown) > 1 else " ")
+        + ", ".join(f"'{key}'" for key in unknown)
+        + f" for tool '{name}'. Valid fields: " + ", ".join(allowed) + "."
+    )
+    if name == "call_tool":
+        # The usual shape of this mistake: the target tool's own arguments, flattened.
+        message += " The target tool's own arguments go under 'arguments'."
+    raise ValueError(message)
+
+
 def _do_list_tools(ops: dict[str, dict], arguments: dict) -> Any:
+    _reject_unknown_arguments("list_tools", arguments)
     grouped = _categories(ops)
     category = arguments.get("category")
     if category is None:
@@ -313,10 +344,25 @@ def _do_list_tools(ops: dict[str, dict], arguments: dict) -> Any:
     }
 
 
+def _missing_tool_name(caller: str, shape: str, arguments: dict) -> ValueError:
+    """Reject a discovery call that named no tool, showing the shape it wanted.
+
+    Naming the missing field alone is not enough here: the caller has just guessed a key for
+    "the tool I mean", so the fix is the whole expected body next to the keys it actually sent.
+    """
+    got = ", ".join(f"'{k}'" for k in arguments) or "nothing"
+    return ValueError(
+        f"Required parameter 'tool_name' is missing for {caller}. "
+        f"Expected {shape} — you passed {got}."
+    )
+
+
 def _do_describe_tool(spec: dict, ops: dict[str, dict], arguments: dict) -> Any:
-    name = arguments.get("name")
+    _reject_unknown_arguments("describe_tool", arguments)
+    name = arguments.get("tool_name")
     if not name:
-        raise ValueError("Required parameter 'name' is missing")
+        raise _missing_tool_name(
+            "describe_tool", '{"tool_name": "get_struct_layout"}', arguments)
     if name not in ops:
         raise _unknown_tool(name, ops)
     entry = ops[name]
@@ -337,9 +383,13 @@ def _dispatch(spec: dict, base: str, name: str, arguments: dict) -> Any:
     if name == "describe_tool":
         return _do_describe_tool(spec, ops, arguments)
     if name == "call_tool":
-        target = arguments.get("name")
+        _reject_unknown_arguments("call_tool", arguments)
+        target = arguments.get("tool_name")
         if not target:
-            raise ValueError("Required parameter 'name' is missing")
+            raise _missing_tool_name(
+                "call_tool",
+                '{"tool_name": "get_struct_layout", "arguments": {"program": "..."}}',
+                arguments)
         if target in ("list_tools", "describe_tool", "call_tool"):
             raise ValueError(
                 f"call_tool cannot run '{target}': it is a discovery tool, call it directly."
@@ -399,14 +449,30 @@ def main() -> None:
             log_fh.close()
 
 
+def _server_instance(base: str) -> str | None:
+    """The running server process's identity, or None when it cannot be asked."""
+    try:
+        health = _get(f"{base}/health")
+        return health.get("started_at") if isinstance(health, dict) else None
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
 def _run_loop(base: str, log) -> None:
-    # Cached OpenAPI spec — fetched on first tools/list or tools/call, then reused.
+    # Cached OpenAPI spec, valid only for the server process it was fetched from. The
+    # schema is generated from that process's own annotations, so a rebuild-and-restart
+    # under a long-lived bridge leaves the cache describing code that no longer runs —
+    # which is how describe_tool ends up advertising a field the live server rejects.
+    # /health's started_at changes on every start; a changed one means refetch.
     spec_cache: dict | None = None
+    spec_instance: str | None = None
 
     def get_spec() -> dict:
-        nonlocal spec_cache
-        if spec_cache is None:
+        nonlocal spec_cache, spec_instance
+        instance = _server_instance(base)
+        if spec_cache is None or (instance is not None and instance != spec_instance):
             spec_cache = _get(f"{base}/openapi.json")
+            spec_instance = instance
         return spec_cache
 
     for raw in sys.stdin:

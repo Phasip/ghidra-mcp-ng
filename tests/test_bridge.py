@@ -299,45 +299,80 @@ class TestDiscoveryTools:
             self._call("list_tools", {"category": "Nonsense"})
 
     def test_describe_tool_returns_the_full_schema(self):
-        result = self._call("describe_tool", {"name": "search_functions"})
+        result = self._call("describe_tool", {"tool_name": "search_functions"})
         assert result["category"] == "Functions"
         assert result["description"] == "Search functions by name"
         assert "program" in result["inputSchema"]["properties"]
         assert result["inputSchema"]["required"] == ["program"]
 
     def test_describe_tool_reaches_operations_outside_the_hot_core(self):
-        assert self._call("describe_tool", {"name": "check_connection"})["name"] \
+        assert self._call("describe_tool", {"tool_name": "check_connection"})["name"] \
             == "check_connection"
 
-    def test_describe_tool_requires_a_name(self):
-        with pytest.raises(ValueError, match="Required parameter 'name' is missing"):
+    def test_describe_tool_requires_a_tool_name(self):
+        with pytest.raises(ValueError, match="Required parameter 'tool_name' is missing"):
             self._call("describe_tool", {})
+
+    def test_describe_tool_shows_the_shape_it_wanted(self):
+        # A guessed key is the whole failure here, so the fix has to be in the message.
+        with pytest.raises(ValueError) as e:
+            self._call("describe_tool", {})
+        assert '{"tool_name": "get_struct_layout"}' in str(e.value)
+        assert "you passed nothing" in str(e.value)
+
+    def test_describe_tool_rejects_a_guessed_key_by_listing_the_real_ones(self):
+        # The reported failure: 'tool_name' guessed as 'name'. Same wording as the server's own
+        # unknown-field filter, so one rule covers the whole surface — and the field vocabulary
+        # is small enough to state, so it is stated rather than guessed at.
+        with pytest.raises(ValueError) as e:
+            self._call("describe_tool", {"name": "get_struct_layout"})
+        assert "Unknown field 'name' for tool 'describe_tool'" in str(e.value)
+        assert "Valid fields: tool_name." in str(e.value)
+        assert "Did you mean" not in str(e.value)
 
     def test_describe_tool_suggests_the_nearest_name(self):
         with pytest.raises(ValueError, match="Did you mean 'search_functions'"):
-            self._call("describe_tool", {"name": "search_function"})
+            self._call("describe_tool", {"tool_name": "search_function"})
 
     def test_call_tool_runs_an_operation_outside_the_hot_core(self):
         with patch.object(bridge, "_get", return_value={"status": "ok"}) as mock_get:
-            result = self._call("call_tool", {"name": "check_connection"})
+            result = self._call("call_tool", {"tool_name": "check_connection"})
         mock_get.assert_called_once_with("http://host/check_connection")
         assert result == {"status": "ok"}
 
     def test_call_tool_forwards_arguments(self):
         with patch.object(bridge, "_post", return_value={"success": True}) as mock_post:
             self._call("call_tool", {
-                "name": "rename_function",
+                "tool_name": "rename_function",
                 "arguments": {"program": "p", "name_or_address": "f", "new_name": "g"},
             })
         assert mock_post.call_args[0][1]["new_name"] == "g"
 
-    def test_call_tool_requires_a_name(self):
-        with pytest.raises(ValueError, match="Required parameter 'name' is missing"):
+    def test_call_tool_requires_a_tool_name(self):
+        with pytest.raises(ValueError, match="Required parameter 'tool_name' is missing"):
             self._call("call_tool", {})
+
+    def test_call_tool_shows_the_shape_it_wanted(self):
+        with pytest.raises(ValueError) as e:
+            self._call("call_tool", {})
+        assert '"tool_name": "get_struct_layout"' in str(e.value)
+        assert '"arguments"' in str(e.value)
+
+    def test_call_tool_rejects_flattened_arguments(self):
+        # Flattening the target tool's arguments is the other way this call goes wrong; running
+        # the tool with no arguments at all would report a missing 'program' and hide the cause.
+        with pytest.raises(ValueError) as e:
+            self._call("call_tool", {"tool_name": "check_connection", "program": "p"})
+        assert "Unknown field 'program' for tool 'call_tool'" in str(e.value)
+        assert "under 'arguments'" in str(e.value)
+
+    def test_list_tools_rejects_an_undeclared_argument(self):
+        with pytest.raises(ValueError, match="Unknown field 'name' for tool 'list_tools'"):
+            self._call("list_tools", {"name": "Functions"})
 
     def test_call_tool_refuses_to_nest_a_discovery_tool(self):
         with pytest.raises(ValueError, match="it is a discovery tool"):
-            self._call("call_tool", {"name": "list_tools"})
+            self._call("call_tool", {"tool_name": "list_tools"})
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +500,56 @@ class TestMainLoopInitialize:
         assert "tools" in responses[0]["result"]["capabilities"]
 
 
+class TestSpecCache:
+    """The cached schema must follow the server process it was generated from."""
+
+    def _urls(self, spec_by_call):
+        """A _get stub answering /health and /openapi.json from a scripted sequence."""
+        calls: list[str] = []
+
+        def fake_get(url: str):
+            calls.append(url)
+            if url.endswith("/health"):
+                return {"status": "ok", "started_at": spec_by_call.pop(0)}
+            return _MINIMAL_SPEC
+
+        return fake_get, calls
+
+    def test_spec_is_fetched_once_while_the_server_stays_up(self):
+        fake_get, calls = self._urls(["2026-08-30T07:00:00Z"] * 4)
+        _run_main_with_inputs(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            get_mock=MagicMock(side_effect=fake_get),
+        )
+        assert [c for c in calls if c.endswith("/openapi.json")] == \
+            ["http://testhost/openapi.json"]
+
+    def test_a_restarted_server_gets_its_schema_refetched(self):
+        # The schema is generated from the running code, so a rebuild-and-restart under a
+        # long-lived bridge is exactly when a cached copy starts describing tools that no
+        # longer exist — or fields the live server now rejects.
+        fake_get, calls = self._urls(["2026-08-30T07:00:00Z", "2026-08-30T09:30:00Z"])
+        _run_main_with_inputs(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            get_mock=MagicMock(side_effect=fake_get),
+        )
+        assert len([c for c in calls if c.endswith("/openapi.json")]) == 2
+
+    def test_an_unreachable_health_endpoint_keeps_the_cached_schema(self):
+        def fake_get(url: str):
+            if url.endswith("/health"):
+                raise urllib.error.URLError("Connection refused")
+            return _MINIMAL_SPEC
+
+        responses = _run_main_with_inputs(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            get_mock=MagicMock(side_effect=fake_get),
+        )
+        assert responses[0]["result"]["tools"]
+
+
 class TestMainLoopToolsList:
     def test_tools_list_returns_hot_core_and_discovery_tools(self):
         responses = _run_main_with_inputs(
@@ -495,8 +580,12 @@ class TestMainLoopToolsList:
 
 class TestMainLoopToolsCall:
     def test_tools_call_dispatches_and_returns_result(self):
-        # Spec is fetched first, then the actual GET call returns the response
-        get_mock = MagicMock(side_effect=[_MINIMAL_SPEC, {"status": "ok"}])
+        # The server is asked for its identity and its spec before the call itself goes out.
+        get_mock = MagicMock(side_effect=lambda url: (
+            {"started_at": "2026-08-30T07:00:00Z"} if url.endswith("/health")
+            else _MINIMAL_SPEC if url.endswith("/openapi.json")
+            else {"status": "ok"}
+        ))
         responses = _run_main_with_inputs(
             {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
              "params": {"name": "check_connection", "arguments": {}}},

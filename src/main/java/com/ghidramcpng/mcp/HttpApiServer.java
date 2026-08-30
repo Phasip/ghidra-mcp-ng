@@ -56,6 +56,14 @@ public class HttpApiServer {
     private static final String VERSION = "0.1.0";
     private static final String OPENAPI_CONTEXT_ID = "ghidra-mcp-ng";
 
+    /**
+     * Identifies this server process. The OpenAPI schema is generated from the code that is
+     * running, so a client that caches it needs to know when that code was replaced — a rebuild
+     * and restart under a long-lived bridge is exactly how a cached schema starts advertising
+     * fields the live server rejects. This changes on every start, and nothing else does.
+     */
+    private static final String STARTED_AT = java.time.Instant.now().toString();
+
     private final int port;
     private final ReadTools readTools;
     private final WriteTools writeTools;
@@ -145,6 +153,9 @@ public class HttpApiServer {
             var body = new com.google.gson.JsonObject();
             body.addProperty("status", "ok");
             body.addProperty("version", VERSION);
+            // Cache token for the generated schema: a client re-fetches /openapi.json whenever
+            // this changes. See bridge.py's get_spec.
+            body.addProperty("started_at", STARTED_AT);
             body.addProperty("tools", ReadTools.TOOL_COUNT + WriteTools.TOOL_COUNT + ScriptTool.TOOL_COUNT);
             // So whoever holds an error_id can find the stack trace it refers to without
             // having to ask the operator where the server writes.
