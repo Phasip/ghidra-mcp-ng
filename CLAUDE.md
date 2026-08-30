@@ -229,21 +229,40 @@ Requires `GHIDRA_HOME` pointing at a Ghidra install (in this environment:
 `/home/develop/tools/ghidra`).
 
 ```bash
+# build + both test suites — the one command to run after a change
+make test              # = buildExtension, gradle test, pytest across 4 workers
+make test-serial       # same, one worker: use when a parallel failure is hard to read
+make test PYTEST_WORKERS=2      # fewer servers on a smaller machine
+
 # compile
-GHIDRA_HOME=$GHIDRA_HOME gradle compileJava --no-daemon -q
+GHIDRA_HOME=$GHIDRA_HOME gradle compileJava -q
 # build the extension zip → dist/ghidra_<ver>_<date>_ghidra-mcp-ng.zip
-GHIDRA_HOME=$GHIDRA_HOME gradle buildExtension --no-daemon
+GHIDRA_HOME=$GHIDRA_HOME gradle buildExtension
 # regenerate the tool spec + docs after changing any annotation/schema
 make tools-docs        # = generateOpenApiSpec + scripts/generate_tools_docs.py → TOOLS.md
-# tests
-GHIDRA_HOME=$GHIDRA_HOME gradle test --no-daemon          # Java
-GHIDRA_HOME=$GHIDRA_HOME python3 -m pytest tests/          # Python (needs gcc; live headless server)
+# tests on their own (pytest needs gcc and starts a live headless server)
+GHIDRA_HOME=$GHIDRA_HOME gradle test
+GHIDRA_HOME=$GHIDRA_HOME python3 -m pytest tests/ -n 4 --dist loadscope
 ```
+
+Do **not** pass `--no-daemon`. Gradle forks a JVM for the build either way, so it buys
+nothing and costs about four seconds on every invocation.
+
+**How the suite stays fast** (worth knowing before you change `tests/conftest.py`):
+- `analyzeHeadless` runs once per fixture source, not once per run. Its output is cached
+  in `build/test-cache/<key>/`, keyed on the fixture C source, the compiler and the Ghidra
+  version; each session copies that project and mutates the copy. Set
+  `GHIDRA_MCP_NO_CACHE=1` to force a re-analysis.
+- Under `pytest-xdist` every worker gets its own port, project copy and server, so classes
+  can be spread freely — but the tests *inside* a class are ordered, so the distribution
+  must be `loadscope`. `conftest.pytest_configure` rejects the modes that would split one.
+  Anything genuinely shared between workers (the installed extension, `~/ghidra_scripts`)
+  has to stay on one worker or be taken under `_shared_lock`.
 
 **Two gotchas that will silently waste your time:**
 - The pytest live-server fixture installs the **newest `dist/*.zip`** and does **not**
-  rebuild. After any Java change you MUST run `gradle buildExtension` before `pytest`, or
-  the integration tests run against stale code.
+  rebuild. Run `make test`, which builds first — a bare `pytest` after a Java change
+  tests the previous build.
 - After changing a tool's annotations, params, or response records, regenerate `TOOLS.md`
   (`make tools-docs`) — it is generated, not hand-maintained.
 

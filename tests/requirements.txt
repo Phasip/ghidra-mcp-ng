@@ -1,1 +1,3 @@
 pytest>=8.0
+# Parallel test execution: each worker runs its own Ghidra server and project.
+pytest-xdist>=3.5
