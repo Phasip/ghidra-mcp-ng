@@ -237,7 +237,14 @@ Struct workflow notes:
 
 - `create_struct` accepts `override=true` to clear and resize an existing struct in place without replacing the underlying data type object.
 - `add_struct_field`, `remove_struct_field`, and `replace_struct_field` preserve later field offsets for non-packed structs and reject edits that would force a relayout.
-- If a type lookup fails for `code*`, the error explains that `code*` is a Ghidra-internal generated type and suggests `void*` or a concrete function definition instead.
+- If a type lookup fails for `code*`, the error explains that `code*` is a Ghidra-internal generated type and points at the function-pointer declarator below, or `void*` if the signature is still unknown.
+
+Callback types:
+
+- Every `type_name` also accepts a C function-pointer declarator — `int (*)(void *dst, int nbytes)` — which creates the function-definition type and applies a pointer to it. An optional calling convention goes where C puts it: `int (__stdcall *)(int)`.
+- The declarator carries no name: the type takes the name the same call gives the thing it types (`new_name`, `field_name`, or a parameter's `name`), so nothing is spelled twice and the callback reaches the next parameter, struct field or vtable slot as `<that name> *`. A call that names nothing is refused, and so is `return_type_name` — a return type has no name of its own, so apply the callback somewhere named first.
+- A name that already exists is reused when the signature matches and refused when it does not — an applied definition is never redefined out from under the sites already typed with it.
+- This matters because an untyped function pointer leaves the decompiler inferring each indirect call's arity from the pushes at that call site, so one callback comes out with a different signature at every site. One applied type fixes them all.
 
 Omit `--rules` to disable all naming rules and use the built-in default timeouts.
 

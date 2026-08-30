@@ -1674,7 +1674,232 @@ class TestStructs:
 
 
 # ---------------------------------------------------------------------------
-# 13. Script management
+# 13. Callback types
+# ---------------------------------------------------------------------------
+
+class TestFunctionPointerTypes:
+    """The type field itself expresses a callback signature.
+
+    Without it a function pointer stays untyped, and the decompiler infers each indirect
+    call's arity from the pushes at that call site — so one callback comes out with a
+    different signature at every site it is called from.
+
+    The declarator carries no name: every tool that applies a type already names the thing
+    it types, and the definition takes that name.
+    """
+
+    def _struct(self, ghidra_server: GhidraClient, prog: str, name: str) -> str:
+        ghidra_server.ok("create_struct", {"program": prog, "name": name, "size": 0})
+        return name
+
+    def test_declarator_types_a_stack_function_pointer(
+            self, ghidra_server: GhidraClient, prog: str):
+        result = ghidra_server.ok(
+            "set_variable",
+            {"program": prog,
+             "name_or_address": "call_via_ptr",
+             "name_or_storage": "local_10",
+             "new_name": "maybe_addFn",
+             "type_name": "int (*)(int a, int b)"},
+        )
+        assert result["success"] is True
+        # The definition took the variable's name, so the next site can name it instead of
+        # respelling the signature.
+        assert result["type_name"] == "maybe_addFn *"
+
+        found = ghidra_server.ok(
+            "search_data_types", {"program": prog, "query": "maybe_addFn"})
+        assert any(t["name"] == "maybe_addFn" for t in found["data_types"]), found
+
+        current = {
+            v["name"]: v["type_name"] for v in ghidra_server.ok(
+                "get_function_variables",
+                {"program": prog, "name_or_address": "call_via_ptr"},
+            )["variables"]
+        }
+        assert current["maybe_addFn"] == "maybe_addFn *"
+
+    def test_declarator_types_a_register_temporary(
+            self, ghidra_server: GhidraClient, prog: str):
+        # The temporary path commits through the decompiler rather than the database, so it
+        # resolves the new type separately from the stack-variable path above. The identity is
+        # read rather than written down: any edit to the fixture would move a literal address.
+        temporaries = [
+            v for v in ghidra_server.ok(
+                "get_function_variables",
+                {"program": prog, "name_or_address": "call_via_ptr"},
+            )["variables"]
+            if v["kind"] == "temporary" and v["defined_at"]
+        ]
+        if not temporaries:
+            pytest.skip("call_via_ptr has no decompiler temporary to type")
+        target = temporaries[0]
+
+        result = ghidra_server.ok(
+            "set_variable",
+            {"program": prog,
+             "name_or_address": "call_via_ptr",
+             "name_or_storage": f"{target['storage']}@{target['defined_at']}",
+             "new_name": "maybe_notify",
+             "type_name": "void (*)(void)"},
+        )
+        assert result["success"] is True
+        assert result["type_name"] == "maybe_notify *"
+
+    def test_a_name_in_the_declarator_is_ignored(
+            self, ghidra_server: GhidraClient, prog: str):
+        # C puts the variable's name inside the parentheses. Accepting it there would be a
+        # second place to spell the name the request already carries.
+        struct = self._struct(ghidra_server, prog, "maybe_IgnoredName")
+        ghidra_server.ok(
+            "add_struct_field",
+            {"program": prog, "struct_name": struct, "field_name": "maybe_read_0x0",
+             "type_name": "int (*someOtherName)(int)"},
+        )
+        names = [t["name"] for t in ghidra_server.ok(
+            "search_data_types", {"program": prog, "query": "someOtherName"})["data_types"]]
+        assert names == [], names
+        assert any(t["name"] == "maybe_read_0x0" for t in ghidra_server.ok(
+            "search_data_types", {"program": prog, "query": "maybe_read_0x0"})["data_types"])
+
+    def test_the_same_name_and_signature_reuses_the_type(
+            self, ghidra_server: GhidraClient, prog: str):
+        spelling = "char (*)(int)"
+        first = self._struct(ghidra_server, prog, "maybe_PeekA")
+        second = self._struct(ghidra_server, prog, "maybe_PeekB")
+        for struct in (first, second):
+            ghidra_server.ok(
+                "add_struct_field",
+                {"program": prog, "struct_name": struct, "field_name": "maybe_peek_0x0",
+                 "type_name": spelling},
+            )
+        # A second definition would land beside it as maybe_peek_0x0.conflict, so match the
+        # prefix — and only the definitions, since the pointer to one is a type of its own.
+        minted = [t for t in ghidra_server.ok(
+            "search_data_types", {"program": prog, "query": "maybe_peek_0x0"})["data_types"]
+            if t["name"].startswith("maybe_peek_0x0")
+            and "FunctionDefinition" in t["type_class"]]
+        assert len(minted) == 1, minted
+
+    def test_the_same_name_with_a_different_signature_is_refused(
+            self, ghidra_server: GhidraClient, prog: str):
+        first = self._struct(ghidra_server, prog, "maybe_TakenA")
+        second = self._struct(ghidra_server, prog, "maybe_TakenB")
+        ghidra_server.ok(
+            "add_struct_field",
+            {"program": prog, "struct_name": first, "field_name": "maybe_taken_0x0",
+             "type_name": "int (*)(int)"},
+        )
+        # Every site already typed with the definition would change with it, so a different
+        # signature under the same name is refused rather than applied.
+        resp = ghidra_server.call(
+            "add_struct_field",
+            {"program": prog, "struct_name": second, "field_name": "maybe_taken_0x0",
+             "type_name": "int (*)(int, int)"},
+        )
+        assert resp["ok"] is False
+        error = resp.get("error", "")
+        assert "maybe_taken_0x0" in error and "already" in error
+
+    def test_a_declarator_without_a_name_in_the_request_is_refused(
+            self, ghidra_server: GhidraClient, prog: str):
+        # Nothing names the type here, and 'local_10' is not a name worth minting one from.
+        resp = ghidra_server.call(
+            "set_variable",
+            {"program": prog, "name_or_address": "call_via_ptr",
+             "name_or_storage": "local_10", "type_name": "int (*)(int)"},
+        )
+        assert resp["ok"] is False
+        assert "new_name" in resp.get("error", "")
+
+    def test_a_declarator_as_a_return_type_is_refused(
+            self, ghidra_server: GhidraClient, prog: str):
+        resp = ghidra_server.call(
+            "set_function_prototype",
+            {"program": prog, "name_or_address": "register_churn3",
+             "return_type_name": "int (*)(int)"},
+        )
+        assert resp["ok"] is False
+        assert "no name of its own" in resp.get("error", "")
+
+    def test_a_bare_prototype_is_answered_with_the_declarator_form(
+            self, ghidra_server: GhidraClient, prog: str):
+        resp = ghidra_server.call(
+            "set_variable",
+            {"program": prog, "name_or_address": "call_via_ptr",
+             "name_or_storage": "local_10", "new_name": "maybe_readIt",
+             "type_name": "int maybe_ReadIt(int, int)"},
+        )
+        assert resp["ok"] is False
+        # An example of the shape that works, not a reconstruction of what was meant.
+        assert "(*)(" in resp.get("error", "")
+
+    def test_unknown_parameter_type_names_the_parameter(
+            self, ghidra_server: GhidraClient, prog: str):
+        struct = self._struct(ghidra_server, prog, "maybe_BadParam")
+        resp = ghidra_server.call(
+            "add_struct_field",
+            {"program": prog, "struct_name": struct, "field_name": "maybe_bad_0x0",
+             "type_name": "int (*)(int ok, NoSuchTypeXyz bad)"},
+        )
+        assert resp["ok"] is False
+        error = resp.get("error", "")
+        assert "Parameter 2" in error and "NoSuchTypeXyz" in error
+
+    def test_unknown_calling_convention_lists_the_valid_ones(
+            self, ghidra_server: GhidraClient, prog: str):
+        struct = self._struct(ghidra_server, prog, "maybe_BadConv")
+        resp = ghidra_server.call(
+            "add_struct_field",
+            {"program": prog, "struct_name": struct, "field_name": "maybe_conv_0x0",
+             "type_name": "int (__nosuchcall *)(int)"},
+        )
+        assert resp["ok"] is False
+        error = resp.get("error", "")
+        assert "__nosuchcall" in error and "Valid conventions" in error
+        # The valid set is small and listed, so nothing is guessed at.
+        assert "Did you mean" not in error
+
+    def test_nested_function_pointer_parameter_says_to_name_it_first(
+            self, ghidra_server: GhidraClient, prog: str):
+        struct = self._struct(ghidra_server, prog, "maybe_Nested")
+        resp = ghidra_server.call(
+            "add_struct_field",
+            {"program": prog, "struct_name": struct, "field_name": "maybe_outer_0x0",
+             "type_name": "int (*)(int (*)(int))"},
+        )
+        assert resp["ok"] is False
+        assert "function pointer" in resp.get("error", "")
+
+    def test_declarator_applies_to_a_prototype_and_a_struct_field(
+            self, ghidra_server: GhidraClient, prog: str):
+        # Runs last: it rewrites call_via_ptr's parameter list, which the tests above address
+        # locals within.
+        applied = ghidra_server.ok(
+            "set_function_prototype",
+            {"program": prog,
+             "name_or_address": "call_via_ptr",
+             "return_type_name": "int",
+             "parameters": [
+                 {"name": "maybe_reader", "type_name": "int (*)(void *dst, int nbytes)"},
+             ]},
+        )
+        assert applied["success"] is True
+        assert "maybe_reader *" in ghidra_server.ok(
+            "get_function_info",
+            {"program": prog, "name_or_address": "call_via_ptr"})["signature"]
+
+        ghidra_server.ok("create_struct", {"program": prog, "name": "maybe_Handlers", "size": 0})
+        field = ghidra_server.ok(
+            "add_struct_field",
+            {"program": prog, "struct_name": "maybe_Handlers", "field_name": "maybe_read_0x8",
+             "type_name": "maybe_reader *"},
+        )
+        assert field["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# 14. Script management
 # ---------------------------------------------------------------------------
 
 class TestScript:

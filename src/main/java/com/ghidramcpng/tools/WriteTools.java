@@ -50,6 +50,7 @@ import java.util.Iterator;
 import java.util.List;
 
 import static com.ghidramcpng.tools.ToolHelpers.findDataType;
+import static com.ghidramcpng.tools.ToolHelpers.findOrCreateDataType;
 import static com.ghidramcpng.tools.ToolHelpers.findFunction;
 import static com.ghidramcpng.tools.ToolHelpers.findSymbolAddress;
 import static com.ghidramcpng.tools.ToolHelpers.optional;
@@ -145,7 +146,9 @@ public class WriteTools {
 
         Program program = openProgram(programName);
         Function func = findFunction(program, funcRef);
-        DataType dataType = typeName != null ? findDataType(program, typeName) : null;
+        DataType dataType = typeName != null
+                ? findOrCreateDataType(program, typeName, newName, "new_name")
+                : null;
 
         // A storage identity names the value itself, so it survives the renumbering that a name
         // does not. Resolving it here costs the decompile setTemporary would run anyway, and the
@@ -246,7 +249,7 @@ public class WriteTools {
                         "'" + nameOrAddress + "' is an external import with no memory-backed storage " +
                         "to retype. Only 'new_name' can be set on an import.");
             }
-            dataType = findDataType(program, typeName);
+            dataType = findOrCreateDataType(program, typeName, newName, "new_name");
         }
         DataType finalDataType = dataType;
 
@@ -336,11 +339,12 @@ public class WriteTools {
             String paramName = requireMaxLength(requireParameterText(parameter, i, "name"), "name", MAX_NAME_LENGTH);
             String paramType = requireParameterText(parameter, i, "type_name");
             rules.validate("variable_name", paramName);
-            DataType dataType = findDataType(program, paramType);
+            DataType dataType = findOrCreateDataType(program, paramType, paramName, "name");
             params.add(createParameter(paramName, dataType, program));
         }
 
-        DataType returnType = findDataType(program, returnTypeName);
+        // A return type is the one slot no tool names, so a declarator cannot be minted here.
+        DataType returnType = findOrCreateDataType(program, returnTypeName, null, null);
         runTransaction(program, "Set prototype: " + funcRef, () -> {
             Function func = findFunction(program, funcRef);
             ReturnParameterImpl returnParam = new ReturnParameterImpl(returnType, program);
@@ -383,7 +387,7 @@ public class WriteTools {
         }
 
         Program program = openProgram(programName);
-        DataType dataType = findDataType(program, typeName);
+        DataType dataType = findOrCreateDataType(program, typeName, newName, "new_name");
         runTransaction(program, "Set param type: " + funcRef + "[" + parameterIndex + "]", () -> {
             Function func = findFunction(program, funcRef);
             Parameter[] params = func.getParameters();
@@ -499,7 +503,7 @@ public class WriteTools {
         rules.validate("struct_field_name", fieldName);
 
         Program program = openProgram(programName);
-        DataType fieldType = findDataType(program, typeName);
+        DataType fieldType = findOrCreateDataType(program, typeName, fieldName, "field_name");
         final int[] ordinalOut = {-1};
         final int requestedOffsetFinal = requestedOffset;
         runTransaction(program, "Add field: " + structName + "." + fieldName, () -> {
@@ -599,7 +603,8 @@ public class WriteTools {
         if (comment != null) requireMaxLength(comment, "comment", MAX_COMMENT_LENGTH);
 
         Program program = openProgram(programName);
-        DataType replacementType = findDataType(program, typeName);
+        DataType replacementType = findOrCreateDataType(
+                program, typeName, newName != null ? newName : fieldName, "field_name");
         final int[] ordinalOut = {-1};
         final String[] resolvedName = {fieldName};
         runTransaction(program, "Replace field in: " + structName, () -> {
@@ -1359,14 +1364,14 @@ public class WriteTools {
             String name_or_storage,
             @Schema(description = "New variable name (max 256 chars); omit to keep the current one.")
             String new_name,
-            @Schema(description = "Data type to assign, e.g. int, char *, MyStruct *; omit to keep the current one.")
+            @Schema(description = "Data type to assign, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int), which is named after new_name; omit to keep the current one.")
             String type_name) {
     }
 
     public record PrototypeParameterRequest(
             @Schema(description = "Parameter name (max 256 chars)", requiredMode = Schema.RequiredMode.REQUIRED)
             String name,
-            @Schema(description = "Data type to assign, e.g. int, char *, MyStruct *", requiredMode = Schema.RequiredMode.REQUIRED)
+            @Schema(description = "Data type to assign, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int), which is named after this parameter", requiredMode = Schema.RequiredMode.REQUIRED)
             String type_name) {
     }
 
@@ -1390,7 +1395,7 @@ public class WriteTools {
             String name_or_address,
             @Schema(description = "0-based parameter index", requiredMode = Schema.RequiredMode.REQUIRED)
             Integer parameter_index,
-            @Schema(description = "Data type to assign", requiredMode = Schema.RequiredMode.REQUIRED)
+            @Schema(description = "Data type to assign, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int), which is named after new_name", requiredMode = Schema.RequiredMode.REQUIRED)
             String type_name,
             @Schema(description = "Optional new parameter name (max 256 chars)")
             String new_name) {
@@ -1416,7 +1421,7 @@ public class WriteTools {
             String struct_name,
             @Schema(description = "Field name (max 256 chars)", requiredMode = Schema.RequiredMode.REQUIRED)
             String field_name,
-            @Schema(description = "Field data type", requiredMode = Schema.RequiredMode.REQUIRED)
+            @Schema(description = "Field data type, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int), which is named after field_name", requiredMode = Schema.RequiredMode.REQUIRED)
             String type_name,
             @Schema(description = "Optional field comment (max 4096 chars)")
             String comment,
@@ -1445,7 +1450,7 @@ public class WriteTools {
             String struct_name,
             @Schema(description = "Field name to replace", requiredMode = Schema.RequiredMode.REQUIRED)
             String field_name,
-            @Schema(description = "Replacement field data type", requiredMode = Schema.RequiredMode.REQUIRED)
+            @Schema(description = "Replacement field data type, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int), which is named after the field", requiredMode = Schema.RequiredMode.REQUIRED)
             String type_name,
             @Schema(description = "Optional replacement field name (max 256 chars)")
             String new_name,
@@ -1480,7 +1485,7 @@ public class WriteTools {
             String name_or_address,
             @Schema(description = "New symbol name (max 256 chars); omit to keep the current one.")
             String new_name,
-            @Schema(description = "Data type to assign, e.g. int, char *, MyStruct *; omit to keep the current one. Not valid on an external import.")
+            @Schema(description = "Data type to assign, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int), which is named after new_name; omit to keep the current one. Not valid on an external import.")
             String type_name) {
     }
 

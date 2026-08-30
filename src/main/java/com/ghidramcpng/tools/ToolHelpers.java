@@ -10,7 +10,14 @@ import ghidra.app.decompiler.DecompileResults;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.data.AbstractIntegerDataType;
 import ghidra.program.model.data.BuiltInDataTypeManager;
+import ghidra.program.model.data.CategoryPath;
 import ghidra.program.model.data.DataType;
+import ghidra.program.model.data.DataTypeManager;
+import ghidra.program.model.data.FunctionDefinition;
+import ghidra.program.model.data.FunctionDefinitionDataType;
+import ghidra.program.model.data.ParameterDefinition;
+import ghidra.program.model.data.ParameterDefinitionImpl;
+import ghidra.program.model.data.PointerDataType;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.symbol.Symbol;
@@ -377,8 +384,8 @@ public final class ToolHelpers {
             throw new IllegalArgumentException(
                     "Data type '" + typeName + "' is not supported here. " +
                     "'code*' is a Ghidra internal generated type, not a stable type name for API calls. " +
-                    "Use void* for an unknown code pointer, or use an actual function definition type " +
-                    "when setting signatures or struct fields.");
+                    "Give the pointer the signature it actually has, as a function-pointer declarator " +
+                    "— 'int (*)(void *dst, int nbytes)' — or void* if that is still unknown.");
         }
 
         // Pointer notation
@@ -469,6 +476,214 @@ public final class ToolHelpers {
                         ? "Did you mean: " + suggestions + "? "
                         : "") +
                 "Use search_data_types to find valid type names (names are case-sensitive).");
+    }
+
+    /**
+     * A C function-pointer declarator: a return type, a parenthesised {@code *} with an optional
+     * calling convention, and a parameter list — {@code int (*)(void *dst, int nbytes)}.
+     *
+     * <p>C puts the variable's name inside those parentheses. Every tool that applies a type
+     * already names the thing it is typing, so a name written there is parsed and discarded
+     * rather than being a second place to spell the same name.
+     */
+    private static final java.util.regex.Pattern FUNCTION_POINTER = java.util.regex.Pattern.compile(
+            "(.+?)\\(\\s*(?:([A-Za-z_][A-Za-z0-9_]*)\\s+)?\\*\\s*(?:[A-Za-z_][A-Za-z0-9_]*)?\\s*\\)\\s*\\((.*)\\)",
+            java.util.regex.Pattern.DOTALL);
+
+    /** A parameter written as a type followed by a name, {@code void *dst} or {@code int nbytes}. */
+    private static final java.util.regex.Pattern NAMED_PARAMETER =
+            java.util.regex.Pattern.compile("(.*[\\s*])([A-Za-z_][A-Za-z0-9_]*)");
+
+    /**
+     * Resolves a type to apply: everything {@link #findDataType} resolves, plus a C
+     * function-pointer declarator — {@code int (*)(void *dst, int nbytes)} — for a callback
+     * type the program does not have yet.
+     *
+     * <p>Every tool that applies a type resolves through here, because a function pointer is
+     * where a type is worth the most: with none on it, the decompiler infers each indirect
+     * call's arity from the pushes at that call site, so one callback comes out with a
+     * different signature at every site it is called from. One applied type fixes them all.
+     *
+     * <p>The definition is named {@code definitionName} — the name the same call gives the
+     * variable, parameter or field — so the callback reaches the next site as
+     * {@code <that name> *}. It is returned unresolved, exactly as the pointer and array types
+     * built above are: Ghidra stores it in the program's data type manager when the caller
+     * applies it, inside the caller's own transaction.
+     *
+     * @param definitionName name this call gives the thing being typed, or null if it gives none
+     * @param nameField      request field that would carry that name, or null if this slot
+     *                       (a return type) has no name of its own
+     */
+    public static DataType findOrCreateDataType(Program program, String typeName,
+            String definitionName, String nameField) {
+        if (typeName != null) {
+            java.util.regex.Matcher declarator = FUNCTION_POINTER.matcher(typeName.trim());
+            if (declarator.matches()) {
+                return functionPointerType(program, declarator, typeName.trim(),
+                        requireDefinitionName(typeName.trim(), definitionName, nameField));
+            }
+        }
+        try {
+            return findDataType(program, typeName);
+        } catch (IllegalArgumentException notAType) {
+            // A spelling that named no type and reads as a function is a declarator the caller
+            // got wrong; "did you mean" over the program's type names cannot help there.
+            if (typeName != null && typeName.indexOf('(') >= 0) {
+                throw new IllegalArgumentException(
+                        "'" + typeName.trim() + "' is not a data type this program has, and does " +
+                        "not parse as a function pointer either. A callback type is written as a C " +
+                        "function-pointer declarator, e.g. 'int (*)(void *dst, int nbytes)'.");
+            }
+            throw notAType;
+        }
+    }
+
+    /** The name the new definition takes, or the reason this call cannot supply one. */
+    private static String requireDefinitionName(String typeName, String definitionName,
+            String nameField) {
+        if (definitionName != null) {
+            return definitionName;
+        }
+        if (nameField == null) {
+            throw new IllegalArgumentException(
+                    "A callback type takes the name of the thing it is applied to, and this slot " +
+                    "has no name of its own. Apply '" + typeName + "' to a variable, parameter or " +
+                    "struct field first, then name that type here as '<that name> *'.");
+        }
+        throw new IllegalArgumentException(
+                "A callback type takes the name of the thing it is applied to, so '" + typeName +
+                "' needs one: pass '" + nameField + "' in the same call.");
+    }
+
+    /**
+     * Builds the callback type a declarator describes, as a pointer to a named function
+     * definition — the shape a parameter, struct field or vtable slot actually holds.
+     *
+     * <p>A name that is already taken is never redefined: every variable, field and call site
+     * already typed with that definition would change with it, silently, from a call that asked
+     * to type one thing. An equivalent definition under that name is reused instead, so applying
+     * the same declarator to the second and third site costs the caller nothing.
+     */
+    private static DataType functionPointerType(Program program, java.util.regex.Matcher declarator,
+            String typeName, String name) {
+        DataTypeManager dtm = program.getDataTypeManager();
+        FunctionDefinitionDataType definition =
+                new FunctionDefinitionDataType(CategoryPath.ROOT, name, dtm);
+        try {
+            definition.setReturnType(findDataType(program, declarator.group(1)));
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Return type of '" + typeName + "': " + e.getMessage());
+        }
+        String convention = declarator.group(2);
+        if (convention != null) {
+            setCallingConvention(program, definition, convention);
+        }
+        definition.setArguments(parametersOf(program, declarator.group(3).trim(), typeName, definition));
+
+        List<DataType> taken = new ArrayList<>();
+        dtm.findDataTypes(name, taken);
+        for (DataType candidate : taken) {
+            if (candidate instanceof FunctionDefinition && candidate.isEquivalent(definition)) {
+                return new PointerDataType(candidate, dtm);
+            }
+        }
+        if (!taken.isEmpty()) {
+            DataType existing = taken.get(0);
+            throw new IllegalArgumentException(
+                    "Cannot create the callback type '" + name + "' from '" + typeName + "': that " +
+                    "name is already " +
+                    (existing instanceof FunctionDefinition already
+                            ? "a function definition with a different signature, "
+                              + already.getPrototypeString()
+                            : "a " + existing.getDisplayName() + " in this program") +
+                    ". Apply '" + name + " *' if that is the type you meant, or use a different " +
+                    "name — an existing definition is not redefined here, because every site " +
+                    "already typed with it would change with it.");
+        }
+        return new PointerDataType(definition, dtm);
+    }
+
+    /** Parses the declarator's parameter list; {@code (void)} and {@code ()} both mean none. */
+    private static ParameterDefinition[] parametersOf(Program program, String parameterList,
+            String typeName, FunctionDefinitionDataType definition) {
+        if (parameterList.isEmpty() || parameterList.equalsIgnoreCase("void")) {
+            return new ParameterDefinition[0];
+        }
+        List<ParameterDefinition> parameters = new ArrayList<>();
+        String[] pieces = parameterList.split(",", -1);
+        for (int i = 0; i < pieces.length; i++) {
+            String piece = pieces[i].trim();
+            if (piece.equals("...")) {
+                if (i != pieces.length - 1) {
+                    throw new IllegalArgumentException(
+                            "'...' is parameter " + (i + 1) + " of " + pieces.length + " in '" +
+                            typeName + "'; varargs must come last.");
+                }
+                definition.setVarArgs(true);
+                continue;
+            }
+            if (piece.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "Parameter " + (i + 1) + " of '" + typeName + "' is empty. Write each one " +
+                        "as a type, optionally followed by a name: 'void *dst' or 'int'.");
+            }
+            if (piece.indexOf('(') >= 0) {
+                throw new IllegalArgumentException(
+                        "Parameter " + (i + 1) + " of '" + typeName + "' is itself a function " +
+                        "pointer ('" + piece + "'), which cannot be written inline. Apply that " +
+                        "type to a variable or struct field first, then name it here as 'that_name *'.");
+            }
+            parameters.add(parameterOf(program, piece, i + 1, typeName));
+        }
+        return parameters.toArray(new ParameterDefinition[0]);
+    }
+
+    private static ParameterDefinition parameterOf(Program program, String piece, int position,
+            String typeName) {
+        try {
+            java.util.regex.Matcher named = NAMED_PARAMETER.matcher(piece);
+            if (named.matches()) {
+                try {
+                    return new ParameterDefinitionImpl(
+                            named.group(2), findDataType(program, named.group(1).trim()), null);
+                } catch (IllegalArgumentException splitFailed) {
+                    // "unsigned int" reads as a named parameter: a type this program does not have
+                    // followed by half of the type it does. Re-read the whole piece as one type,
+                    // and if that is not one either, report the split reading — for 'MyStruct dst'
+                    // the missing type is what the caller needs to hear about.
+                    try {
+                        return new ParameterDefinitionImpl(null, findDataType(program, piece), null);
+                    } catch (IllegalArgumentException notATypeEither) {
+                        throw splitFailed;
+                    }
+                }
+            }
+            return new ParameterDefinitionImpl(null, findDataType(program, piece), null);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(
+                    "Parameter " + position + " of '" + typeName + "': " + e.getMessage());
+        }
+    }
+
+    /** Applies a calling convention this program's compiler spec has, naming the ones it does. */
+    private static void setCallingConvention(Program program, FunctionDefinitionDataType definition,
+            String convention) {
+        List<String> known = new ArrayList<>();
+        for (ghidra.program.model.lang.PrototypeModel model
+                : program.getCompilerSpec().getCallingConventions()) {
+            known.add(model.getName());
+        }
+        if (!known.contains(convention)) {
+            throw new IllegalArgumentException(
+                    "Unknown calling convention '" + convention + "' for this program. " +
+                    "Valid conventions: " + String.join(", ", known) + ".");
+        }
+        try {
+            definition.setCallingConvention(convention);
+        } catch (ghidra.util.exception.InvalidInputException e) {
+            throw new IllegalArgumentException(
+                    "Calling convention '" + convention + "' was rejected: " + e.getMessage());
+        }
     }
 
     private static final java.util.regex.Pattern STDINT_FIXED_WIDTH =

@@ -56,7 +56,7 @@ Rename and/or retype a global symbol (data, label, or import) by name or hex add
 | `program` | string | yes |  | Program name; see list_project_files. |
 | `name_or_address` | string | yes |  | Current name or 0x-prefixed hex address of the global symbol |
 | `new_name` | string |  |  | New symbol name (max 256 chars); omit to keep the current one. |
-| `type_name` | string |  |  | Data type to assign, e.g. int, char *, MyStruct *; omit to keep the current one. Not valid on an external import. |
+| `type_name` | string |  |  | Data type to assign, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int), which is named after new_name; omit to keep the current one. Not valid on an external import. |
 
 ### `set_parameter_type`
 
@@ -67,7 +67,7 @@ Set the data type and optionally the name of a specific function parameter by in
 | `program` | string | yes |  | Program name; see list_project_files. |
 | `name_or_address` | string | yes |  | Function name or hex address |
 | `parameter_index` | integer (int32) | yes |  | 0-based parameter index |
-| `type_name` | string | yes |  | Data type to assign |
+| `type_name` | string | yes |  | Data type to assign, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int), which is named after new_name |
 | `new_name` | string |  |  | Optional new parameter name (max 256 chars) |
 
 ### `set_variable`
@@ -80,7 +80,7 @@ Rename and/or retype one parameter, local, or decompiler temporary in a function
 | `name_or_address` | string | yes |  | Function name (case-sensitive) or 0x-prefixed hex entry point. |
 | `name_or_storage` | string | yes |  | Variable name as your last read of this function showed it — still resolves to that value after naming another temporary renumbers it. A storage identity from get_function_variables ('storage@defined_at', e.g. EAX:4@0x00401020) also works. |
 | `new_name` | string |  |  | New variable name (max 256 chars); omit to keep the current one. |
-| `type_name` | string |  |  | Data type to assign, e.g. int, char *, MyStruct *; omit to keep the current one. |
+| `type_name` | string |  |  | Data type to assign, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int), which is named after new_name; omit to keep the current one. |
 
 ## Code
 
@@ -165,7 +165,7 @@ Add a field to an existing structure.
 | `program` | string | yes |  | Program name; see list_project_files. |
 | `struct_name` | string | yes |  | Struct name to modify |
 | `field_name` | string | yes |  | Field name (max 256 chars) |
-| `type_name` | string | yes |  | Field data type |
+| `type_name` | string | yes |  | Field data type, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int), which is named after field_name |
 | `comment` | string |  |  | Optional field comment (max 4096 chars) |
 | `offset` | integer (int32) |  |  | Byte offset at which to place the field within an existing struct gap. The offset must point to undefined (unnamed) bytes — it may not overlap any existing named field. The field must fit entirely within the struct: offset + field_size must be <= struct size. Use this to name a gap left by replace_struct_field shrinking a field, e.g. offset=18 places a 1-byte field at offset 0x12 without inflating the struct. Omit this parameter to append the field after the last defined component (may grow the struct). |
 
@@ -217,7 +217,7 @@ Replace an existing structure field in place without moving later fields.
 | `program` | string | yes |  | Program name; see list_project_files. |
 | `struct_name` | string | yes |  | Struct name |
 | `field_name` | string | yes |  | Field name to replace |
-| `type_name` | string | yes |  | Replacement field data type |
+| `type_name` | string | yes |  | Replacement field data type, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int), which is named after the field |
 | `new_name` | string |  |  | Optional replacement field name (max 256 chars) |
 | `comment` | string |  |  | Optional replacement field comment (max 4096 chars) |
 

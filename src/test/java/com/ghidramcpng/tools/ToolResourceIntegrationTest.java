@@ -359,6 +359,45 @@ class ToolResourceIntegrationTest {
     }
 
     @Test
+    void functionPointerDeclarator_takesTheNameOfTheThingItIsAppliedTo() throws Exception {
+        // The declarator mints a data type, and the name it gets is the one the same call gives
+        // the field — so the field's naming rule gates it, and nothing has to be spelled twice.
+        RuledTools tools = toolsWithRules(
+                "naming:\n"
+                + "  struct_field_name:\n"
+                + "    pattern: \"^(maybe_|likely_|guess_)[A-Za-z0-9_]+$\"\n"
+                + "    message: Struct field names must start with maybe_.\n");
+        tools.write().createStruct(json(
+                "program", programName,
+                "name", "CallbackRuleStruct",
+                "size", 0));
+
+        var violation = assertThrows(com.ghidramcpng.rules.NamingRuleViolation.class,
+                () -> tools.write().addStructField(json(
+                        "program", programName,
+                        "struct_name", "CallbackRuleStruct",
+                        "field_name", "unmarked",
+                        "type_name", "int (*)(int)")));
+        assertTrue(violation.getMessage().contains("Struct field names must start with maybe_."),
+                "The configured message must be the error. Got: " + violation.getMessage());
+
+        assertDoesNotThrow(() -> tools.write().addStructField(json(
+                "program", programName,
+                "struct_name", "CallbackRuleStruct",
+                "field_name", "maybe_read_0x0",
+                // A name written where C puts the variable's is parsed and discarded.
+                "type_name", "int (*ignoredName)(int)")));
+
+        var types = tools.read().searchDataTypes(programName, "", 500).data_types().stream()
+                .map(com.ghidramcpng.model.DataTypeEntry::name)
+                .toList();
+        assertTrue(types.contains("maybe_read_0x0"),
+                "The definition takes the field's name. Got: " + types);
+        assertFalse(types.contains("ignoredName"),
+                "The name in the declarator must not reach the data type manager. Got: " + types);
+    }
+
+    @Test
     void readBudget_isOffWhenUnconfigured() throws Exception {
         RuledTools tools = toolsWithRules("timeouts:\n  decompile_seconds: 60\n");
         for (int i = 0; i < 5; i++) {
