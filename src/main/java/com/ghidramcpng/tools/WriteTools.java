@@ -111,7 +111,7 @@ public class WriteTools {
             }
         });
 
-        return new RenameFunctionResponse(true, newName);
+        return recorded(new RenameFunctionResponse(true, newName));
     }
 
     @POST
@@ -185,10 +185,10 @@ public class WriteTools {
             }
         });
 
-        return new SetVariableResponse(true,
+        return recorded(new SetVariableResponse(true,
                 newName != null ? newName : variableName,
                 found.getDataType() != null ? found.getDataType().getName() : null,
-                found instanceof Parameter ? "parameter" : "local");
+                found instanceof Parameter ? "parameter" : "local"));
     }
 
     @POST
@@ -256,9 +256,9 @@ public class WriteTools {
         });
 
         Data data = program.getListing().getDataAt(address);
-        return new SetGlobalResponse(true,
+        return recorded(new SetGlobalResponse(true,
                 newName != null ? newName : target.getName(),
-                data != null ? data.getDataType().getName() : null);
+                data != null ? data.getDataType().getName() : null));
     }
 
     @POST
@@ -288,7 +288,7 @@ public class WriteTools {
             }
         });
 
-        return new CreateLabelResponse(true, name, address);
+        return recorded(new CreateLabelResponse(true, name, address));
     }
 
     @POST
@@ -335,7 +335,7 @@ public class WriteTools {
                     SourceType.USER_DEFINED);
         });
 
-        return new SetFunctionPrototypeResponse(true, funcRef, returnTypeName, params.size());
+        return recorded(new SetFunctionPrototypeResponse(true, funcRef, returnTypeName, params.size()));
     }
 
     @POST
@@ -396,7 +396,7 @@ public class WriteTools {
             }
         });
 
-        return new SetParameterTypeResponse(true, parameterIndex, typeName, newName);
+        return recorded(new SetParameterTypeResponse(true, parameterIndex, typeName, newName));
     }
 
     @POST
@@ -453,7 +453,7 @@ public class WriteTools {
                     DataTypeConflictHandler.REPLACE_HANDLER);
         });
 
-        return new CreateStructResponse(true, name);
+        return recorded(new CreateStructResponse(true, name));
     }
 
     @POST
@@ -529,7 +529,7 @@ public class WriteTools {
             ordinalOut[0] = comp.getOrdinal();
         });
 
-        return new AddStructFieldResponse(true, structName, fieldName, ordinalOut[0]);
+        return recorded(new AddStructFieldResponse(true, structName, fieldName, ordinalOut[0]));
     }
 
     @POST
@@ -557,7 +557,7 @@ public class WriteTools {
             struct.clearAtOffset(target.getOffset());
         });
 
-        return new RemoveStructFieldResponse(true, structName, removedOrdinal[0]);
+        return recorded(new RemoveStructFieldResponse(true, structName, removedOrdinal[0]));
     }
 
     @POST
@@ -617,7 +617,7 @@ public class WriteTools {
             resolvedName[0] = finalFieldName;
         });
 
-        return new ReplaceStructFieldResponse(true, structName, resolvedName[0], ordinalOut[0], typeName);
+        return recorded(new ReplaceStructFieldResponse(true, structName, resolvedName[0], ordinalOut[0], typeName));
     }
 
     @POST
@@ -764,6 +764,21 @@ public class WriteTools {
         } catch (Exception e) {
             throw new RuntimeException("Failed to open program '" + programName + "': " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Marks that this tool has recorded a finding, clearing the {@code reads.max_without_write}
+     * budget in rules.yaml. Wrapped around the success return rather than folded into
+     * {@link #runTransaction} so the budget clears exactly when a tool reports success — a
+     * transaction that committed and then failed validation has recorded nothing.
+     *
+     * <p>Deliberately not used by set_comment: prose is the thing the budget exists to stop
+     * substituting for names and types, so a comment must not buy more reading. analyze_program
+     * and import_binary are program lifecycle, not findings, and also do not clear it.
+     */
+    private <T> T recorded(T response) {
+        rules.noteRecordedWrite();
+        return response;
     }
 
     private void runTransaction(Program program, String description, ThrowingAction action) {
@@ -1108,8 +1123,8 @@ public class WriteTools {
         // show — not the decompiler's inference for the same value.
         Variable committed = findCommittedVariable(func, finalName);
         DataType appliedType = committed != null ? committed.getDataType() : applied.getDataType();
-        return new SetVariableResponse(true, finalName,
-                appliedType != null ? appliedType.getName() : null, "temporary");
+        return recorded(new SetVariableResponse(true, finalName,
+                appliedType != null ? appliedType.getName() : null, "temporary"));
     }
 
     /**

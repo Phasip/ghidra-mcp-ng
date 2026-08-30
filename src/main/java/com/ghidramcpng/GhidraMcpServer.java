@@ -162,13 +162,25 @@ public class GhidraMcpServer implements GhidraLaunchable {
                     rulesFile, rules.getDecompileTimeoutSeconds());
         }
 
+        // Also forces the lazy validation of reads.max_without_write, so a bad value fails at
+        // startup rather than in the middle of a session.
+        try {
+            int readBudget = rules.getMaxReadsWithoutWrite();
+            if (readBudget > 0) {
+                System.err.printf("[ghidra-mcp-ng] Read budget: %d decompile/disassembly call(s) " +
+                        "between writes (%s)%n", readBudget,
+                        rules.isReadBudgetIgnorable() ? "advisory" : "enforced");
+            }
+        } catch (IllegalArgumentException e) {
+            die(e.getMessage());
+        }
+
         // Register tools
 
         ProgramManager mgr = new ProgramManager(ghidraProject);
         TemporaryNames temporaryNames = new TemporaryNames();
         WriteTools writeTools = new WriteTools(mgr, rules, temporaryNames);
-        ReadTools readTools = new ReadTools(mgr, rules.getDecompileTimeoutSeconds(), writeTools,
-                temporaryNames);
+        ReadTools readTools = new ReadTools(mgr, rules, writeTools, temporaryNames);
         ScriptTool scriptTool = new ScriptTool(mgr);
 
         System.err.printf("[ghidra-mcp-ng] %d HTTP tool endpoints available%n",

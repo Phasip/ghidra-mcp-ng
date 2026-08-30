@@ -38,6 +38,56 @@ import:
   # Uncomment and set the path to enable this constraint:
   # require_child_path: /targets/
 
+# How much reading may run ahead of the record.
+#
+# Why this exists: reading is one cheap call that always succeeds, writing is N validated calls
+# that can fail. An agent follows that gradient — it decompiles thirty functions, understands the
+# binary perfectly in its own context, writes none of it down, and the next session opens the
+# project to FUN_00401000 again. This caps the run-ahead.
+#
+# Counted reads are decompile_function and get_disassembly, and nothing else: those two are where
+# a function's contents arrive and a finding is made. Searches, xrefs and listings are navigation
+# — they find the next thing to look at — and charging them would only teach the agent to
+# navigate blind. A call that fails its own argument validation is never charged.
+#
+# The budget is cleared by a write that records a finding: rename_function, set_variable,
+# set_global, create_label, set_function_prototype, set_parameter_type, create_struct,
+# add_struct_field, remove_struct_field, replace_struct_field. Deliberately NOT by:
+#   set_comment  — prose substituting for names and types is the thing this rule exists to stop,
+#                  so a comment must not buy more reading (see the comments: section below)
+#   run_script   — a script's effect on the program cannot be inspected from here, so a read-only
+#                  audit script would otherwise clear the budget for free
+#   analyze_program, import_binary — program lifecycle, not findings
+#
+# The count is server-wide, not per program: it describes the agent's habit, and an agent
+# alternating between two programs has still written nothing down.
+#
+# Keys:
+#   max_without_write:  reads allowed between writes. 0 (default) disables the rule.
+#   allow_ignore:       what happens once the budget is spent.
+#                         true  — advisory. The budget resets as the error is raised, so
+#                                 repeating the call succeeds and the error returns one budget
+#                                 later. The agent is nagged, never stuck.
+#                         false — forcing. Every further read is refused until a write lands.
+#   message:            the ENTIRE error the agent is shown. Nothing is added to it — it replaces
+#                       the built-in diagnostic rather than decorating it, so say everything the
+#                       agent needs, including what to do next. Omit the key to fall back to the
+#                       built-in text.
+
+reads:
+  max_without_write: 10
+  allow_ignore: true
+  message: >
+    Read budget exhausted: too many functions decompiled or disassembled since the last write
+    (see reads.max_without_write in rules.yaml). Persist what you have already worked out before
+    reading further — rename the functions you identified, set the parameter, local and global
+    names you inferred, and give the structures you recognised real fields. Any of rename_function,
+    set_variable, set_global, create_label, set_function_prototype, set_parameter_type,
+    create_struct, add_struct_field, remove_struct_field and replace_struct_field clears the
+    budget, and several can be batched with batch_tool_call.
+    set_comment does not clear this budget; a finding only reaches the next session as a name or
+    a type, never as prose. A finding that exists only in this conversation is lost when it ends.
+
 naming:
 
   function_name:

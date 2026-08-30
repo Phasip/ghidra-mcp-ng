@@ -23,6 +23,7 @@ public class RulesConfig {
     private Map<String, CommentRule> comments = new HashMap<>();
     private Timeouts timeouts = new Timeouts();
     private Import imports = new Import();
+    private Reads reads = new Reads();
 
     public Map<String, FieldRule> getNaming() {
         return naming;
@@ -46,6 +47,14 @@ public class RulesConfig {
 
     public void setTimeouts(Timeouts timeouts) {
         this.timeouts = timeouts != null ? timeouts : new Timeouts();
+    }
+
+    public Reads getReads() {
+        return reads;
+    }
+
+    public void setReads(Reads reads) {
+        this.reads = reads != null ? reads : new Reads();
     }
 
     public Import getImports() {
@@ -157,6 +166,61 @@ public class RulesConfig {
 
         public void setDecompile_seconds(Integer decompile_seconds) {
             this.decompile_seconds = decompile_seconds;
+        }
+    }
+
+    /**
+     * The budget an agent may spend on reading before it has to write something down.
+     *
+     * <p>Reading is cheap and unvalidated; writing is validated and can fail. Left alone that
+     * gradient produces a session that decompiles forty functions, holds the whole picture in
+     * its context, and persists none of it — so the next session starts from FUN_00401000 again.
+     * This caps how far the reading can run ahead of the record.
+     */
+    public static class Reads {
+
+        /**
+         * How many decompile_function / get_disassembly calls may run between writes.
+         * 0 (the default) disables the budget entirely.
+         */
+        private Integer max_without_write = 0;
+
+        /**
+         * What happens once the budget is spent. False forces a write: every further read is
+         * refused until one lands. True makes the refusal advisory — the budget resets as the
+         * error is raised, so repeating the call succeeds and the error returns one budget later.
+         */
+        private Boolean allow_ignore = false;
+
+        /**
+         * The entire error message shown when the budget is spent. Nothing is added to it —
+         * it replaces the built-in diagnostic rather than decorating it. Unset falls back to
+         * that built-in text.
+         */
+        private String message;
+
+        public Integer getMax_without_write() {
+            return max_without_write;
+        }
+
+        public void setMax_without_write(Integer max_without_write) {
+            this.max_without_write = max_without_write != null ? max_without_write : 0;
+        }
+
+        public Boolean getAllow_ignore() {
+            return allow_ignore;
+        }
+
+        public void setAllow_ignore(Boolean allow_ignore) {
+            this.allow_ignore = allow_ignore != null && allow_ignore;
+        }
+
+        public String getMessage() {
+            return message;
+        }
+
+        public void setMessage(String message) {
+            this.message = message;
         }
     }
 

@@ -149,6 +149,112 @@ public class RulesEngine {
         return patterns.isEmpty();
     }
 
+    // -----------------------------------------------------------------------------------
+    // reads.max_without_write — the read budget
+    // -----------------------------------------------------------------------------------
+
+    /**
+     * The read tools that spend the budget. Both hand the agent a function's contents, which is
+     * exactly the point at which it learns something worth writing down. Every other read tool
+     * (searches, xrefs, listings) is navigation — it locates the next thing to look at rather
+     * than producing a finding, so charging it would only push the agent to navigate less.
+     */
+    public static final java.util.List<String> BUDGETED_READ_TOOLS =
+            java.util.List.of("decompile_function", "get_disassembly");
+
+    /**
+     * Reads charged since the last recorded write. Server-wide rather than per-program: the
+     * budget describes the agent's habit, and an agent that alternates between two programs is
+     * still one agent that has written nothing down.
+     */
+    private int readsSinceWrite = 0;
+
+    private final Object readBudgetLock = new Object();
+
+    /** The configured budget, or 0 when {@code reads.max_without_write} is unset/disabled. */
+    public int getMaxReadsWithoutWrite() {
+        RulesConfig.Reads reads = config.getReads();
+        if (reads == null || reads.getMax_without_write() == null) {
+            return 0;
+        }
+        int configured = reads.getMax_without_write();
+        if (configured < 0) {
+            throw new IllegalArgumentException(
+                    "Invalid value for reads.max_without_write in rules.yaml: " + configured + ". " +
+                    "The budget must be 0 (disabled) or a positive number of reads.");
+        }
+        return configured;
+    }
+
+    /** True when a spent budget only warns: {@code reads.allow_ignore} resets it as it fires. */
+    public boolean isReadBudgetIgnorable() {
+        RulesConfig.Reads reads = config.getReads();
+        return reads != null && Boolean.TRUE.equals(reads.getAllow_ignore());
+    }
+
+    /**
+     * Charge one budgeted read, called by the tools in {@link #BUDGETED_READ_TOOLS} once their
+     * arguments have resolved and before they do the work.
+     *
+     * <p>When {@code reads.allow_ignore} is true the budget is reset as the error is raised, so
+     * the refusal is advisory: repeating the call succeeds and the error returns one budget
+     * later. When it is false the budget stays spent and every further read is refused until
+     * {@link #noteRecordedWrite()} clears it.
+     *
+     * @throws NamingRuleViolation if the budget is exhausted
+     */
+    public void noteBudgetedRead(String toolName) {
+        int max = getMaxReadsWithoutWrite();
+        if (max <= 0) return;
+
+        boolean allowIgnore = isReadBudgetIgnorable();
+        synchronized (readBudgetLock) {
+            if (readsSinceWrite < max) {
+                readsSinceWrite++;
+                return;
+            }
+            // Reset before throwing, so the read that was refused is not also charged.
+            if (allowIgnore) readsSinceWrite = 0;
+        }
+        throw readBudgetViolation(toolName, max);
+    }
+
+    /**
+     * Clear the budget: a write tool has just recorded a finding. Called on the success path of
+     * the writes that persist analysis — names, types, prototypes, structs.
+     */
+    public void noteRecordedWrite() {
+        synchronized (readBudgetLock) {
+            readsSinceWrite = 0;
+        }
+    }
+
+    /**
+     * The whole diagnostic when {@code reads.message} is unset. A configured message replaces
+     * this outright — it is the project's own wording, and appending to it would put words the
+     * project did not write in front of the agent.
+     */
+    private static String defaultReadBudgetMessage(int max) {
+        return "Read budget exhausted: " + max + " " + String.join("/", BUDGETED_READ_TOOLS) +
+                (max == 1 ? " call has run" : " calls have run") +
+                " since the last recorded write, which is the limit set by " +
+                "reads.max_without_write in rules.yaml. Write down what you have already found " +
+                "before reading more — any of rename_function, set_variable, set_global, " +
+                "create_label, set_function_prototype, set_parameter_type, create_struct, " +
+                "add_struct_field, remove_struct_field or replace_struct_field clears the budget, " +
+                "and several can be batched with batch_tool_call. " +
+                "set_comment does not clear this budget; prose is what the budget exists to stop " +
+                "substituting for names and types.";
+    }
+
+    private NamingRuleViolation readBudgetViolation(String toolName, int max) {
+        String configured = config.getReads().getMessage();
+        String message = (configured == null || configured.isBlank())
+                ? defaultReadBudgetMessage(max)
+                : configured.trim();
+        return new NamingRuleViolation("read_budget", toolName, message);
+    }
+
     /**
      * Names Ghidra generates itself for a function it found but nobody has identified.
      * Not configurable: these are Ghidra's own conventions, not a project preference.

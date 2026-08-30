@@ -11,7 +11,7 @@ A Ghidra extension that exposes reverse-engineering operations as an MCP (Model 
 ## Features
 
 - Tools covering function analysis, decompilation, cross-references, data types, structs, comments, and managed scripting
-- Configurable naming-convention enforcement and operation timeouts via `rules.yaml` — the server rejects names that do not follow your conventions and makes decompilation timeout behavior explicit
+- Configurable naming-convention enforcement, comment constraints, a read budget and operation timeouts via `rules.yaml` — the server rejects names that do not follow your conventions, caps how far reading runs ahead of what has been written down, and makes decompilation timeout behavior explicit
 - Write operations run inside Ghidra transactions and are auto-saved
 - HTTP REST API — one Ghidra instance can serve multiple AI agents simultaneously
 - Minimal Python MCP bridge (`bridge.py`) — stdlib only, no extra dependencies
@@ -191,6 +191,47 @@ Every key is optional and every constraint is off unless set, so omitting the se
 variables only (`local_`, `param_`, `unaff_`, `in_`, `extraout_`); the decompiler's own `uVar7`/
 `iVar3` never reach the listing and are not counted. Comments on data (no enclosing function) are
 subject to `max_length` alone. Clearing a comment is always allowed.
+
+### Read budget
+
+An optional `reads:` section caps how far reading may run ahead of the record. Same gradient as
+above, one step earlier: reading is one cheap call that always succeeds, writing is N validated
+calls that can fail, and an agent that follows it decompiles thirty functions, understands the
+binary perfectly in its own context, writes none of it down, and leaves the next session opening
+the project to `FUN_00401000` again.
+
+```yaml
+reads:
+  max_without_write: 10   # reads allowed between writes; 0 (default) disables the rule
+  allow_ignore: true      # true = advisory (resets as it fires); false = forces a write
+  message: "Persist what you already worked out before reading further."
+```
+
+`message` is the **entire** error the agent is shown — nothing is prepended or appended, so it
+replaces the built-in diagnostic rather than decorating it. Say everything the agent needs,
+including what to do next. Omit the key to fall back to the built-in text, which states the
+limit, names `reads.max_without_write`, and lists the tools that clear it. The shipped
+`rules.yaml` carries a complete message you can edit or delete.
+
+Only `decompile_function` and `get_disassembly` are counted — those are where a function's
+contents arrive and a finding is made. Searches, xrefs and listings are navigation, and charging
+them would only teach the agent to navigate blind. A call that fails its own argument validation
+is never charged, and the count is server-wide rather than per program.
+
+The budget is cleared by a write that records a finding: `rename_function`, `set_variable`,
+`set_global`, `create_label`, `set_function_prototype`, `set_parameter_type`, `create_struct`,
+`add_struct_field`, `remove_struct_field`, `replace_struct_field`. Deliberately **not** by
+`set_comment` — prose substituting for names and types is exactly what this rule exists to stop,
+so a comment must not buy more reading — nor by `run_script`, whose effect on the program cannot
+be inspected from here, so a read-only audit script would otherwise clear the budget for free.
+`analyze_program` and `import_binary` are program lifecycle, not findings, and do not clear it.
+
+`allow_ignore` decides what happens once the budget is spent:
+
+| Value | Behaviour |
+|---|---|
+| `true` | Advisory. The budget resets as the error is raised, so repeating the call succeeds and the same error returns one budget later. The agent is nagged, never stuck. |
+| `false` | Forcing. Every further read is refused until a qualifying write lands. |
 
 Struct workflow notes:
 

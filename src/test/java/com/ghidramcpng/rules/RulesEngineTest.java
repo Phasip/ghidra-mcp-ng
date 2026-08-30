@@ -510,6 +510,143 @@ class RulesEngineTest {
                 RulesEngine.KNOWN_NAMING_FIELDS);
     }
 
+    // -----------------------------------------------------------------------------------
+    // reads.max_without_write — the read budget
+    // -----------------------------------------------------------------------------------
+
+    private static RulesEngine budget(int max, boolean allowIgnore, String message) {
+        RulesConfig cfg = new RulesConfig();
+        RulesConfig.Reads reads = new RulesConfig.Reads();
+        reads.setMax_without_write(max);
+        reads.setAllow_ignore(allowIgnore);
+        reads.setMessage(message);
+        cfg.setReads(reads);
+        return new RulesEngine(cfg);
+    }
+
+    @Test
+    @DisplayName("No reads section means an unlimited budget")
+    void readBudget_unconfigured_neverRefuses() {
+        var eng = new RulesEngine(new RulesConfig());
+        assertEquals(0, eng.getMaxReadsWithoutWrite());
+        for (int i = 0; i < 100; i++) {
+            assertDoesNotThrow(() -> eng.noteBudgetedRead("decompile_function"));
+        }
+    }
+
+    @Test
+    @DisplayName("max_without_write: 0 disables the budget explicitly")
+    void readBudget_zero_neverRefuses() {
+        var eng = budget(0, false, null);
+        for (int i = 0; i < 100; i++) {
+            assertDoesNotThrow(() -> eng.noteBudgetedRead("get_disassembly"));
+        }
+    }
+
+    @Test
+    @DisplayName("allow_ignore: false refuses every read until a write clears the budget")
+    void readBudget_forcing_staysExhaustedUntilWrite() {
+        var eng = budget(2, false, null);
+        assertDoesNotThrow(() -> eng.noteBudgetedRead("decompile_function"));
+        assertDoesNotThrow(() -> eng.noteBudgetedRead("decompile_function"));
+
+        // Exhausted, and it stays exhausted — repeating does not wear the refusal down.
+        assertThrows(NamingRuleViolation.class, () -> eng.noteBudgetedRead("decompile_function"));
+        assertThrows(NamingRuleViolation.class, () -> eng.noteBudgetedRead("decompile_function"));
+        assertThrows(NamingRuleViolation.class, () -> eng.noteBudgetedRead("get_disassembly"));
+
+        eng.noteRecordedWrite();
+        assertDoesNotThrow(() -> eng.noteBudgetedRead("decompile_function"));
+        assertDoesNotThrow(() -> eng.noteBudgetedRead("decompile_function"));
+        assertThrows(NamingRuleViolation.class, () -> eng.noteBudgetedRead("decompile_function"));
+    }
+
+    @Test
+    @DisplayName("allow_ignore: true resets the budget as the error is raised")
+    void readBudget_ignorable_resetsOnRefusal() {
+        var eng = budget(2, true, null);
+        assertDoesNotThrow(() -> eng.noteBudgetedRead("decompile_function"));
+        assertDoesNotThrow(() -> eng.noteBudgetedRead("decompile_function"));
+        assertThrows(NamingRuleViolation.class, () -> eng.noteBudgetedRead("decompile_function"));
+
+        // The refusal itself was the reset, so a full budget is available again with no write.
+        assertDoesNotThrow(() -> eng.noteBudgetedRead("decompile_function"));
+        assertDoesNotThrow(() -> eng.noteBudgetedRead("decompile_function"));
+        assertThrows(NamingRuleViolation.class, () -> eng.noteBudgetedRead("decompile_function"));
+    }
+
+    @Test
+    @DisplayName("A configured message is the whole error — nothing is added to it")
+    void readBudget_configuredMessage_isUsedVerbatim() {
+        String configured = "Project rule: name it before you read on.";
+        var eng = budget(3, false, configured);
+        for (int i = 0; i < 3; i++) eng.noteBudgetedRead("decompile_function");
+
+        var ex = assertThrows(NamingRuleViolation.class,
+                () -> eng.noteBudgetedRead("decompile_function"));
+        assertEquals("read_budget", ex.getFieldType());
+        assertEquals("decompile_function", ex.getOffendingName());
+        assertEquals(configured, ex.getMessage(),
+                "The project's own wording must reach the agent unaltered");
+    }
+
+    @Test
+    @DisplayName("allow_ignore does not change the configured message either")
+    void readBudget_configuredMessage_isUsedVerbatimWhenIgnorable() {
+        String configured = "Write something down first.";
+        var eng = budget(1, true, configured);
+        eng.noteBudgetedRead("get_disassembly");
+        var ex = assertThrows(NamingRuleViolation.class,
+                () -> eng.noteBudgetedRead("get_disassembly"));
+        assertEquals(configured, ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("With no configured message the built-in diagnostic states the limit and the fix")
+    void readBudget_withoutMessage_fallsBackToTheBuiltInDiagnostic() {
+        var eng = budget(3, false, null);
+        for (int i = 0; i < 3; i++) eng.noteBudgetedRead("decompile_function");
+
+        var ex = assertThrows(NamingRuleViolation.class,
+                () -> eng.noteBudgetedRead("decompile_function"));
+        assertTrue(ex.getMessage().contains("reads.max_without_write"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("3"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("rename_function"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("set_comment does not clear this budget"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("The reads section is read from YAML")
+    void readBudget_parsesFromYaml() throws IOException {
+        var eng = fromYaml("reads:\n" +
+                           "  max_without_write: 4\n" +
+                           "  allow_ignore: true\n" +
+                           "  message: write it down\n");
+        assertEquals(4, eng.getMaxReadsWithoutWrite());
+        assertTrue(eng.isReadBudgetIgnorable());
+        for (int i = 0; i < 4; i++) eng.noteBudgetedRead("decompile_function");
+        var ex = assertThrows(NamingRuleViolation.class,
+                () -> eng.noteBudgetedRead("decompile_function"));
+        assertEquals("write it down", ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("A negative max_without_write is rejected rather than treated as disabled")
+    void readBudget_negative_isRejected() throws IOException {
+        var eng = fromYaml("reads:\n  max_without_write: -1\n");
+        var ex = assertThrows(IllegalArgumentException.class, eng::getMaxReadsWithoutWrite);
+        assertTrue(ex.getMessage().contains("reads.max_without_write"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("A misspelled key under reads: is rejected at load")
+    void readBudget_unknownKey_isRejected() {
+        var ex = assertThrows(IllegalArgumentException.class,
+                () -> fromYaml("reads:\n  max_without_writes: 5\n"));
+        assertTrue(ex.getMessage().contains("max_without_writes"),
+                "Error must name the offending key. Got: " + ex.getMessage());
+    }
+
     @Test
     @DisplayName("The shipped rules.yaml loads cleanly")
     void shippedRulesYaml_loads() throws IOException {

@@ -201,7 +201,9 @@ JSON keys). Add `@Schema(description=...)` for docs. `Address` fields serialize 
    - `findDataType(program, name)` — handles `type*` and `type[N]` notation.
 5. **Transactions:** wrap every program mutation in `runTransaction(program, desc, () -> ...)`
    (→ `ProgramManager.withTransaction`). Do expensive read work (lookups, diagnostic
-   decompiles) *before* opening the transaction, not inside it.
+   decompiles) *before* opening the transaction, not inside it. A write that records an
+   analysis finding returns through `recorded(...)`, which clears the `reads.max_without_write`
+   budget; `set_comment` deliberately does not.
 6. **Naming rules:** call `rules.validate("<field_kind>", name)` before writing any name
    (`function_name`, `variable_name`, `struct_name`, `struct_field_name`). Rules are enforced
    uniformly — there are no exemptions (e.g. `this`, struct type names all go through it).

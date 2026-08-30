@@ -144,8 +144,9 @@ class ToolResourceIntegrationTest {
         importedProgram = null;
 
         programManager = new ProgramManager(ghidraProject);
-        writeTools = new WriteTools(programManager, RulesEngine.load((File) null), new TemporaryNames());
-        readTools = new ReadTools(programManager, 60, writeTools, new TemporaryNames());
+        RulesEngine rules = RulesEngine.load((File) null);
+        writeTools = new WriteTools(programManager, rules, new TemporaryNames());
+        readTools = new ReadTools(programManager, rules, writeTools, new TemporaryNames());
         scriptTool = new ScriptTool(programManager, extensionScriptsDir);
     }
 
@@ -318,19 +319,137 @@ class ToolResourceIntegrationTest {
     }
 
     // -----------------------------------------------------------------------------------
+    // Read budget (reads.max_without_write) — end-to-end, because the thing under test is the
+    // interaction between two tool classes sharing one RulesEngine, which unit tests cannot see.
+    // -----------------------------------------------------------------------------------
+
+    /** A ReadTools/WriteTools pair sharing one RulesEngine, so they share one read budget. */
+    private record RuledTools(ReadTools read, WriteTools write) {
+    }
+
+    private RuledTools toolsWithRules(String rulesYaml) throws IOException {
+        Path rulesFile = Files.createTempFile("rules_", ".yaml");
+        Files.writeString(rulesFile, rulesYaml, StandardCharsets.UTF_8);
+        try {
+            RulesEngine rules = RulesEngine.load(rulesFile.toFile());
+            TemporaryNames names = new TemporaryNames();
+            WriteTools write = new WriteTools(programManager, rules, names);
+            return new RuledTools(new ReadTools(programManager, rules, write, names), write);
+        } finally {
+            Files.deleteIfExists(rulesFile);
+        }
+    }
+
+    @Test
+    void readBudget_isOffWhenUnconfigured() throws Exception {
+        RuledTools tools = toolsWithRules("timeouts:\n  decompile_seconds: 60\n");
+        for (int i = 0; i < 5; i++) {
+            int attempt = i;
+            assertDoesNotThrow(() -> tools.read().decompileFunction(programName, FN_ADD),
+                    "read " + attempt + " must not be refused when no budget is configured");
+        }
+    }
+
+    @Test
+    void readBudget_whenExhausted_refusesEveryReadUntilAWriteLands() throws Exception {
+        RuledTools tools = toolsWithRules(
+                "reads:\n"
+                + "  max_without_write: 2\n"
+                + "  allow_ignore: false\n"
+                + "  message: Name what you found first.\n");
+
+        assertDoesNotThrow(() -> tools.read().decompileFunction(programName, FN_ADD));
+        assertDoesNotThrow(() -> tools.read().decompileFunction(programName, FN_MULTIPLY));
+
+        var violation = assertThrows(com.ghidramcpng.rules.NamingRuleViolation.class,
+                () -> tools.read().decompileFunction(programName, FN_COMPUTE));
+        assertEquals("Name what you found first.", violation.getMessage(),
+                "The configured message is the whole error, with nothing added to it");
+
+        // A comment is prose, not a recorded finding — it must not buy more reading.
+        Address addAddress = functionAddress(
+                tools.read().searchFunctions(programName, "", 200).functions(), FN_ADD);
+        tools.write().setComment(json(
+                "program", programName,
+                "address", "0x" + addAddress,
+                "comment", "a note that records nothing a later session can read",
+                "comment_type", "PLATE"));
+        assertThrows(com.ghidramcpng.rules.NamingRuleViolation.class,
+                () -> tools.read().decompileFunction(programName, FN_COMPUTE));
+
+        // A rename is.
+        tools.write().renameFunction(json(
+                "program", programName,
+                "name_or_address", FN_MULTIPLY,
+                "new_name", "budget_clearing_name"));
+        assertDoesNotThrow(() -> tools.read().decompileFunction(programName, FN_COMPUTE));
+    }
+
+    @Test
+    void readBudget_withAllowIgnore_resetsAsTheErrorIsRaised() throws Exception {
+        RuledTools tools = toolsWithRules(
+                "reads:\n  max_without_write: 1\n  allow_ignore: true\n");
+
+        assertDoesNotThrow(() -> tools.read().decompileFunction(programName, FN_ADD));
+
+        assertThrows(com.ghidramcpng.rules.NamingRuleViolation.class,
+                () -> tools.read().decompileFunction(programName, FN_ADD));
+
+        // The budget reset as the error was raised, so the very same call now goes through —
+        // and the refusal returns one budget later, without any write in between.
+        assertDoesNotThrow(() -> tools.read().decompileFunction(programName, FN_ADD));
+        assertThrows(com.ghidramcpng.rules.NamingRuleViolation.class,
+                () -> tools.read().decompileFunction(programName, FN_ADD));
+    }
+
+    @Test
+    void readBudget_isSharedWithDisassemblyAndNotSpentByInvalidCalls() throws Exception {
+        RuledTools tools = toolsWithRules(
+                "reads:\n  max_without_write: 2\n  allow_ignore: false\n");
+        Address addAddress = functionAddress(
+                tools.read().searchFunctions(programName, "", 200).functions(), FN_ADD);
+
+        // A call that fails its own argument validation never reaches the work, so it is
+        // not charged — otherwise a typo would cost the agent a read it never got.
+        assertThrows(IllegalArgumentException.class,
+                () -> tools.read().decompileFunction(programName, "no_such_function_here"));
+
+        assertDoesNotThrow(() -> tools.read().getDisassembly(programName, "0x" + addAddress, 5));
+        assertDoesNotThrow(() -> tools.read().decompileFunction(programName, FN_ADD));
+        assertThrows(com.ghidramcpng.rules.NamingRuleViolation.class,
+                () -> tools.read().getDisassembly(programName, "0x" + addAddress, 5));
+    }
+
+    @Test
+    void readBudget_appliesToBatchedReadsAsPerItemErrors() throws Exception {
+        RuledTools tools = toolsWithRules(
+                "reads:\n"
+                + "  max_without_write: 1\n"
+                + "  allow_ignore: false\n"
+                + "  message: Name what you found first.\n");
+
+        JsonArray calls = new JsonArray();
+        for (String function : List.of(FN_ADD, FN_MULTIPLY, FN_COMPUTE)) {
+            calls.add(json("program", programName, "name_or_address", function));
+        }
+        var response = tools.read().batchToolCall(json(
+                "tool", "decompile_function", "calls", calls));
+
+        assertEquals(3, response.count());
+        assertEquals(2, response.failed(), "Only the first call fits in a budget of 1");
+        assertTrue(response.results().get(0).ok());
+        assertEquals("Name what you found first.", response.results().get(1).error(),
+                "A batched item must carry the same diagnostic as a standalone call");
+    }
+
+    // -----------------------------------------------------------------------------------
     // Comment rules (improvement_plan §4.2/§4.3) — end-to-end through set_comment, which is
     // where the enclosing-function lookup that RulesEngineTest can only stub actually runs.
     // -----------------------------------------------------------------------------------
 
     /** A WriteTools whose only rules are the ones in the supplied YAML. */
     private WriteTools writeToolsWithRules(String rulesYaml) throws IOException {
-        Path rulesFile = Files.createTempFile("rules_", ".yaml");
-        Files.writeString(rulesFile, rulesYaml, StandardCharsets.UTF_8);
-        try {
-            return new WriteTools(programManager, RulesEngine.load(rulesFile.toFile()), new TemporaryNames());
-        } finally {
-            Files.deleteIfExists(rulesFile);
-        }
+        return toolsWithRules(rulesYaml).write();
     }
 
     @Test
@@ -1740,8 +1859,9 @@ class ToolResourceIntegrationTest {
     private void reopenManager() throws Exception {
         programManager.closeAll();
         programManager = new ProgramManager(ghidraProject);
-        writeTools = new WriteTools(programManager, RulesEngine.load((File) null), new TemporaryNames());
-        readTools = new ReadTools(programManager, 60, writeTools, new TemporaryNames());
+        RulesEngine rules = RulesEngine.load((File) null);
+        writeTools = new WriteTools(programManager, rules, new TemporaryNames());
+        readTools = new ReadTools(programManager, rules, writeTools, new TemporaryNames());
     }
 
     @Test

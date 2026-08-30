@@ -13,6 +13,7 @@ import com.ghidramcpng.model.VariableEntry;
 import com.ghidramcpng.model.XrefEntry;
 import com.ghidramcpng.program.ProgramManager;
 import com.ghidramcpng.program.TemporaryNames;
+import com.ghidramcpng.rules.RulesEngine;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import ghidra.program.model.address.AddressIterator;
@@ -91,16 +92,18 @@ public class ReadTools {
     private static final int MAX_XREF_LIMIT = 5000;
 
     private final ProgramManager mgr;
+    private final RulesEngine rules;
     private final int decompileTimeoutSeconds;
     /** Batch dispatch target for the write tools; batch_tool_call is the only user. */
     private final WriteTools writeTools;
     /** Records the temporary names each decompile reports, for set_variable to check against. */
     private final TemporaryNames temporaryNames;
 
-    public ReadTools(ProgramManager mgr, int decompileTimeoutSeconds, WriteTools writeTools,
+    public ReadTools(ProgramManager mgr, RulesEngine rules, WriteTools writeTools,
             TemporaryNames temporaryNames) {
         this.mgr = mgr;
-        this.decompileTimeoutSeconds = decompileTimeoutSeconds;
+        this.rules = rules;
+        this.decompileTimeoutSeconds = rules.getDecompileTimeoutSeconds();
         this.writeTools = writeTools;
         this.temporaryNames = temporaryNames;
     }
@@ -556,6 +559,8 @@ public class ReadTools {
                 "or a function/symbol name. Use get_address_info first if you need segment/function context.");
         }
 
+        rules.noteBudgetedRead("get_disassembly");
+
         List<DisassemblyLine> lines = new ArrayList<>();
         while (current != null && lines.size() < validatedLimit) {
             Function containing = program.getFunctionManager().getFunctionContaining(current.getAddress());
@@ -674,6 +679,8 @@ public class ReadTools {
         int effectiveTimeoutSeconds = validatedTimeoutSeconds > 0
                 ? validatedTimeoutSeconds
                 : decompileTimeoutSeconds;
+        // Charged only once the call is known to be well-formed, so a typo'd name costs nothing.
+        rules.noteBudgetedRead("decompile_function");
         DecompileResults results =
                 ToolHelpers.decompileFreshWithResults(program, function, effectiveTimeoutSeconds);
         if (results.getHighFunction() != null) {
