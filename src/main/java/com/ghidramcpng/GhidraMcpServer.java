@@ -181,7 +181,7 @@ public class GhidraMcpServer implements GhidraLaunchable {
         TemporaryNames temporaryNames = new TemporaryNames();
         WriteTools writeTools = new WriteTools(mgr, rules, temporaryNames);
         ReadTools readTools = new ReadTools(mgr, rules, writeTools, temporaryNames);
-        ScriptTool scriptTool = new ScriptTool(mgr);
+        ScriptTool scriptTool = new ScriptTool(mgr, temporaryNames);
 
         System.err.printf("[ghidra-mcp-ng] %d HTTP tool endpoints available%n",
             ReadTools.TOOL_COUNT + WriteTools.TOOL_COUNT + ScriptTool.TOOL_COUNT);

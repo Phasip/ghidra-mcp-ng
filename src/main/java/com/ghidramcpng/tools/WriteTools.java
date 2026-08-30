@@ -74,7 +74,7 @@ public class WriteTools {
 
     private final ProgramManager mgr;
     private final RulesEngine rules;
-    /** What the caller last read, so a rename of a renumbered temporary can be refused. */
+    /** What the caller last read, so a write to a renumbered temporary follows its value. */
     private final TemporaryNames temporaryNames;
 
     public WriteTools(ProgramManager mgr, RulesEngine rules, TemporaryNames temporaryNames) {
@@ -129,13 +129,13 @@ public class WriteTools {
             JsonObject request) {
         String programName = required(request, "program");
         String funcRef = required(request, "name_or_address");
-        String variableName = required(request, "variable_name");
+        String variableRef = required(request, "name_or_storage");
         String newName = optional(request, "new_name", null);
         String typeName = optional(request, "type_name", null);
 
         if (newName == null && typeName == null) {
             throw new IllegalArgumentException(
-                    "Nothing to change for variable '" + variableName + "': pass 'new_name', " +
+                    "Nothing to change for variable '" + variableRef + "': pass 'new_name', " +
                     "'type_name', or both.");
         }
         if (newName != null) {
@@ -146,11 +146,24 @@ public class WriteTools {
         Program program = openProgram(programName);
         Function func = findFunction(program, funcRef);
         DataType dataType = typeName != null ? findDataType(program, typeName) : null;
+
+        // A storage identity names the value itself, so it survives the renumbering that a name
+        // does not. Resolving it here costs the decompile setTemporary would run anyway, and the
+        // decompile is handed on so it is not paid twice.
+        boolean addressedByStorage = isStorageSpelling(variableRef);
+        HighFunction decompiled = addressedByStorage
+                ? requireHighFunction(program, func, rules.getDecompileTimeoutSeconds())
+                : null;
+        String variableName = addressedByStorage
+                ? findByStorage(decompiled, func, variableRef).getName()
+                : variableRef;
+
         Variable found = findCommittedVariable(func, variableName);
-        if (found == null) {
+        if (found == null && !addressedByStorage) {
             // A global read out of a decompiled body reads like a local to the caller, but the
             // decompiler never lists one among a function's variables. Say so here rather than
-            // after a decompile that would only report the name as missing.
+            // after a decompile that would only report the name as missing. A storage identity
+            // already resolved to one of this function's own values, so it can never be this.
             Symbol global = globalSymbolNamed(program, variableName);
             if (global != null) {
                 throw new IllegalArgumentException(
@@ -162,7 +175,8 @@ public class WriteTools {
         if (found == null || !hasStoredStorage(found)) {
             // Everything the database does not hold in stack or memory storage — every register
             // and intermediate value — has to be committed through the decompiler's own view.
-            return setTemporary(program, func, variableName, newName, dataType, typeName);
+            return setTemporary(program, func, decompiled, variableName, addressedByStorage,
+                    newName, dataType, typeName);
         }
 
         runTransaction(program, "Set variable: " + func.getName() + "." + variableName, () -> {
@@ -189,7 +203,7 @@ public class WriteTools {
         return recorded(new SetVariableResponse(true,
                 newName != null ? newName : variableName,
                 found.getDataType() != null ? found.getDataType().getName() : null,
-                found instanceof Parameter ? "parameter" : "local"));
+                found instanceof Parameter ? "parameter" : "local", null));
     }
 
     @POST
@@ -1076,15 +1090,25 @@ public class WriteTools {
      * on the next decompile; that is a silent no-op, so the write is verified and rolled back
      * rather than reported as a success that later vanishes.
      */
-    private SetVariableResponse setTemporary(Program program, Function func, String variableName,
+    private SetVariableResponse setTemporary(Program program, Function func,
+            HighFunction alreadyDecompiled, String variableName, boolean addressedByStorage,
             String newName, DataType dataType, String typeName) {
         int timeoutSeconds = rules.getDecompileTimeoutSeconds();
-        HighFunction highFunction = requireHighFunction(program, func, timeoutSeconds);
-        HighSymbol symbol = findHighSymbolIn(highFunction, variableName);
-        requireNameStillMeansWhatWasRead(program, func, highFunction, symbol, variableName);
+        HighFunction highFunction = alreadyDecompiled != null ? alreadyDecompiled
+                : requireHighFunction(program, func, timeoutSeconds);
+        HighSymbol current = findHighSymbolIn(highFunction, variableName);
+        // A storage identity names the value itself, so there is no numbering to see through.
+        HighSymbol asRead = addressedByStorage ? null
+                : resolveAsLastRead(program, func, highFunction, current, variableName);
+        HighSymbol symbol = asRead != null ? asRead : current;
         if (symbol == null) {
             throw notFound(highFunction, func, variableName);
         }
+        // The write went to a value the caller addressed by a name that has since renumbered, so
+        // say which value it was — by the identity, which will still name it after the next write.
+        String resolvedStorage = asRead != null ? TemporaryNames.identityOf(asRead) : null;
+        // From here on the target is whatever it is called now, not what the caller called it.
+        String targetName = symbol.getName();
 
         if (newName == null && !symbol.isNameLocked()) {
             throw new IllegalArgumentException(
@@ -1095,8 +1119,8 @@ public class WriteTools {
                     "and 'type_name' together.");
         }
 
-        String finalName = newName != null ? newName : variableName;
-        runTransaction(program, "Set temporary: " + func.getName() + "." + variableName, () -> {
+        String finalName = newName != null ? newName : targetName;
+        runTransaction(program, "Set temporary: " + func.getName() + "." + targetName, () -> {
             try {
                 HighFunctionDBUtil.updateDBVariable(symbol, newName, dataType, SourceType.USER_DEFINED);
             } catch (DuplicateNameException e) {
@@ -1127,7 +1151,7 @@ public class WriteTools {
         Variable committed = findCommittedVariable(func, finalName);
         DataType appliedType = committed != null ? committed.getDataType() : applied.getDataType();
         return recorded(new SetVariableResponse(true, finalName,
-                appliedType != null ? appliedType.getName() : null, "temporary"));
+                appliedType != null ? appliedType.getName() : null, "temporary", resolvedStorage));
     }
 
     /**
@@ -1170,6 +1194,58 @@ public class WriteTools {
         return null;
     }
 
+    /**
+     * Tells a storage spelling from a variable name. Ghidra writes storage as a location and a
+     * size ({@code EAX:4}, {@code Stack[-0x10]:4}), optionally followed by the address the value
+     * is defined at ({@code EAX:4@0x00401020}); neither {@code :} nor {@code @} can appear in a
+     * name, so the two vocabularies cannot collide.
+     */
+    private static boolean isStorageSpelling(String ref) {
+        return ref.indexOf('@') >= 0 || ref.matches(".*:[0-9]+");
+    }
+
+    /**
+     * Finds the value a storage spelling identifies. Storage is derived from the code, so unlike
+     * a decompiler-invented name it does not renumber when a neighbouring value is named — which
+     * is what makes a whole function's temporaries nameable from a single read.
+     *
+     * <p>A bare storage is accepted when exactly one value lives there; when several do, the
+     * refusal lists their full identities rather than picking one.
+     */
+    private static HighSymbol findByStorage(HighFunction highFunction, Function func, String ref) {
+        List<HighSymbol> matches = new ArrayList<>();
+        List<String> identities = new ArrayList<>();
+        Iterator<HighSymbol> symbols = highFunction.getLocalSymbolMap().getSymbols();
+        while (symbols.hasNext()) {
+            HighSymbol symbol = symbols.next();
+            String identity = TemporaryNames.identityOf(symbol);
+            identities.add(identity);
+            if (identity.equalsIgnoreCase(ref)
+                    || String.valueOf(symbol.getStorage()).equalsIgnoreCase(ref)) {
+                matches.add(symbol);
+            }
+        }
+        if (matches.size() == 1) {
+            return matches.get(0);
+        }
+        if (matches.size() > 1) {
+            StringBuilder message = new StringBuilder()
+                    .append("Storage '").append(ref).append("' holds ").append(matches.size())
+                    .append(" different values in function '").append(func.getName())
+                    .append("'. Name the one you mean by its full identity:");
+            for (HighSymbol match : matches) {
+                message.append("\n  ").append(TemporaryNames.identityOf(match))
+                       .append(" (currently '").append(match.getName()).append("')");
+            }
+            throw new IllegalArgumentException(message.toString());
+        }
+        throw new IllegalArgumentException(
+                "No variable in function '" + func.getName() + "' is stored at '" + ref + "'. " +
+                "Storage is 'storage@defined_at' as get_function_variables reports it, e.g. " +
+                (identities.isEmpty() ? "EAX:4@0x00401020" : identities.get(0)) +
+                ". Call get_function_variables for the current list.");
+    }
+
     /** The decompiler's symbol named {@code name} in an already-decompiled function, or null. */
     private static HighSymbol findHighSymbolIn(HighFunction highFunction, String name) {
         Iterator<HighSymbol> symbols = highFunction.getLocalSymbolMap().getSymbols();
@@ -1200,49 +1276,55 @@ public class WriteTools {
     }
 
     /**
-     * Refuses a write to a decompiler-invented name that no longer refers to the value the caller
-     * last read under it. Naming one temporary renumbers the rest, so the second write of a pair
-     * planned from a single decompile would land on a different value — successfully, and without
-     * any sign that it went to the wrong place. Renumbering can also retire the name outright,
-     * which is why this runs before the name is reported as missing: "did you mean uVar1?" would
-     * be pointing at exactly the wrong value. Only a name whose meaning has demonstrably changed
-     * is refused; a name that still means what it meant, and a function that was never read here,
-     * both pass through.
+     * Resolves a decompiler-invented name in the frame the caller is working in: the value that
+     * name referred to the last time a read here showed this function, which is the only place the
+     * caller could have got the name. Naming one temporary makes Ghidra renumber the rest, so by
+     * the second write of a series planned from a single decompile the names have moved under the
+     * caller — through no fault of its plan. Resolving through the read puts every write of that
+     * series on the value it meant; matching by current name would put it on a neighbour,
+     * successfully and with nothing in the response to say so.
+     *
+     * <p>Returns the symbol the name meant, or null when the record has nothing to say and the
+     * current name should stand: the function was never read here, the name is not one the
+     * decompiler invented, or it still means exactly what it did.
      */
-    private void requireNameStillMeansWhatWasRead(Program program, Function func,
-            HighFunction highFunction, HighSymbol symbol, String variableName) {
-        if (symbol != null && symbol.isNameLocked()) {
-            return; // A name the database holds does not renumber.
+    private HighSymbol resolveAsLastRead(Program program, Function func, HighFunction highFunction,
+            HighSymbol current, String variableName) {
+        if (current != null && current.isNameLocked()) {
+            return null; // A name the database holds never renumbered; it outranks the record.
         }
         String asRead = temporaryNames.lastRead(
                 program.getName(), func.getEntryPoint(), variableName);
-        if (asRead == null) {
-            return;
+        if (asRead == null || (current != null && asRead.equals(TemporaryNames.identityOf(current)))) {
+            return null;
         }
-        String now = symbol != null ? TemporaryNames.identityOf(symbol) : null;
-        if (asRead.equals(now)) {
-            return;
+        HighSymbol meant = findByIdentity(highFunction, asRead);
+        if (meant != null) {
+            return meant;
         }
+        // The value itself is gone, not just its number, so there is nothing to redirect the write
+        // to. Writing to whatever carries the name now would hit a value the caller never saw.
         throw new IllegalArgumentException(
-                "'" + variableName + "' in function '" + func.getName() + "' no longer refers to " +
-                "the value it did when you last read this function: " +
-                (now != null ? "it now refers to " + now + ", not " + asRead
-                             : "the name is gone from the current decompile, where it meant " + asRead) +
-                ". Naming one temporary makes Ghidra renumber the rest. " +
-                whereThatValueWentNow(highFunction, asRead) +
-                " Decompile '" + func.getName() + "' again and work from the new names.");
+                "'" + variableName + "' in function '" + func.getName() + "' meant " + asRead +
+                " when you last read this function, and that value is no longer a variable of its " +
+                "own — a type or prototype change can dissolve one. " +
+                (current != null
+                        ? "The name is still in use, but for a different value, so this write was " +
+                          "not applied. "
+                        : "") +
+                "Decompile '" + func.getName() + "' again and work from what it shows now.");
     }
 
-    /** Tells the caller what the value it meant is called now, which is the whole fix. */
-    private static String whereThatValueWentNow(HighFunction highFunction, String identity) {
+    /** The symbol whose storage and defining address match {@code identity}, or null. */
+    private static HighSymbol findByIdentity(HighFunction highFunction, String identity) {
         Iterator<HighSymbol> symbols = highFunction.getLocalSymbolMap().getSymbols();
         while (symbols.hasNext()) {
             HighSymbol candidate = symbols.next();
             if (identity.equals(TemporaryNames.identityOf(candidate))) {
-                return "The value you meant is now called '" + candidate.getName() + "'.";
+                return candidate;
             }
         }
-        return "The value you meant is no longer a variable of its own.";
+        return null;
     }
 
     /** The decompiler's model of {@code func}, which is where its temporaries live. */
@@ -1273,8 +1355,8 @@ public class WriteTools {
             String program,
             @Schema(description = "Function name (case-sensitive) or 0x-prefixed hex entry point.", requiredMode = Schema.RequiredMode.REQUIRED)
             String name_or_address,
-            @Schema(description = "Current variable or parameter name; see get_function_variables.", requiredMode = Schema.RequiredMode.REQUIRED)
-            String variable_name,
+            @Schema(description = "Variable name as your last read of this function showed it — still resolves to that value after naming another temporary renumbers it. A storage identity from get_function_variables ('storage@defined_at', e.g. EAX:4@0x00401020) also works.", requiredMode = Schema.RequiredMode.REQUIRED)
+            String name_or_storage,
             @Schema(description = "New variable name (max 256 chars); omit to keep the current one.")
             String new_name,
             @Schema(description = "Data type to assign, e.g. int, char *, MyStruct *; omit to keep the current one.")
@@ -1386,7 +1468,9 @@ public class WriteTools {
     }
 
     public record SetVariableResponse(boolean success, String name, String type_name,
-            String kind) {
+            String kind,
+            @Schema(description = "Storage identity ('storage@defined_at') the name you passed referred to when you last read this function. Present only when naming an earlier temporary had renumbered it since, in which case the write followed the value rather than the name.")
+            String resolved_storage) {
     }
 
     public record SetGlobalRequest(

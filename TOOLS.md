@@ -78,7 +78,7 @@ Rename and/or retype one parameter, local, or decompiler temporary in a function
 |-----------|------|:--------:|---------|-------------|
 | `program` | string | yes |  | Program name; see list_project_files. |
 | `name_or_address` | string | yes |  | Function name (case-sensitive) or 0x-prefixed hex entry point. |
-| `variable_name` | string | yes |  | Current variable or parameter name; see get_function_variables. |
+| `name_or_storage` | string | yes |  | Variable name as your last read of this function showed it — still resolves to that value after naming another temporary renumbers it. A storage identity from get_function_variables ('storage@defined_at', e.g. EAX:4@0x00401020) also works. |
 | `new_name` | string |  |  | New variable name (max 256 chars); omit to keep the current one. |
 | `type_name` | string |  |  | Data type to assign, e.g. int, char *, MyStruct *; omit to keep the current one. |
 

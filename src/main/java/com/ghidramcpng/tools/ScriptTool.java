@@ -1,6 +1,7 @@
 package com.ghidramcpng.tools;
 
 import com.ghidramcpng.program.ProgramManager;
+import com.ghidramcpng.program.TemporaryNames;
 import com.ghidramcpng.tools.ToolHelpers;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -63,13 +64,17 @@ public class ScriptTool {
      */
     private final java.nio.file.Path extensionScriptsDir;
 
-    public ScriptTool(ProgramManager mgr) {
-        this(mgr, null);
+    private final TemporaryNames temporaryNames;
+
+    public ScriptTool(ProgramManager mgr, TemporaryNames temporaryNames) {
+        this(mgr, temporaryNames, null);
     }
 
     /** Constructor used in tests to inject the extension scripts directory explicitly. */
-    public ScriptTool(ProgramManager mgr, java.nio.file.Path extensionScriptsDir) {
+    public ScriptTool(ProgramManager mgr, TemporaryNames temporaryNames,
+            java.nio.file.Path extensionScriptsDir) {
         this.mgr = mgr;
+        this.temporaryNames = temporaryNames;
         this.extensionScriptsDir = extensionScriptsDir;
     }
 
@@ -218,11 +223,19 @@ public class ScriptTool {
         return withScriptRuntime(() -> {
             String programName = requireBodyText(request, "program");
             String filename = requireFilename(request, "filename");
-            String[] args = parseOptionalArgs(request);
+            String[] args = parseOptionalArgs(request, "args");
             Program program = mgr.getOrOpen(programName);
             java.nio.file.Path scriptPath = resolveScript(filename);
             SourceSync source = syncWithRegisteredSource(scriptPath);
-            return executeScript(program, scriptPath, args, source);
+            try {
+                return executeScript(program, scriptPath, args, source);
+            } finally {
+                // A script can rename or retype anything, and can report names of its own that no
+                // read here ever served, so set_variable must stop resolving names through reads
+                // taken before it ran. Also on failure: a script that threw may already have
+                // written. Costs the caller a re-read, which is the cheap side of the trade.
+                temporaryNames.invalidate(program.getName());
+            }
         });
     }
 
@@ -386,20 +399,21 @@ public class ScriptTool {
         return scriptPath;
     }
 
-    private static String[] parseOptionalArgs(JsonObject body) {
-        if (body == null || !body.has("args") || body.get("args").isJsonNull()) {
+    /** Takes the field name, like every other body reader here, so the call site names it. */
+    private static String[] parseOptionalArgs(JsonObject body, String fieldName) {
+        if (body == null || !body.has(fieldName) || body.get(fieldName).isJsonNull()) {
             return new String[0];
         }
-        if (!body.get("args").isJsonArray()) {
-            throw new IllegalArgumentException("'args' must be a JSON array of strings");
+        if (!body.get(fieldName).isJsonArray()) {
+            throw new IllegalArgumentException("'" + fieldName + "' must be a JSON array of strings");
         }
-        JsonArray arr = body.getAsJsonArray("args");
+        JsonArray arr = body.getAsJsonArray(fieldName);
         String[] result = new String[arr.size()];
         for (int i = 0; i < arr.size(); i++) {
             var el = arr.get(i);
             if (el.isJsonNull() || !el.isJsonPrimitive() || !el.getAsJsonPrimitive().isString()) {
                 throw new IllegalArgumentException(
-                        "'args[" + i + "]' must be a string. Pass numbers as strings " +
+                        "'" + fieldName + "[" + i + "]' must be a string. Pass numbers as strings " +
                         "(e.g. \"42\" instead of 42).");
             }
             result[i] = el.getAsString();

@@ -737,6 +737,9 @@ class TestPaginationTruncation:
 
 class TestWriteOperations:
     """
+    Renaming a function, and the set_variable calls that resolve against variables
+    the program database already holds.
+
     Write tests use permissive (no-rules) naming — rules enforcement is
     covered by the fast RulesEngineTest unit tests.
     """
@@ -777,7 +780,7 @@ class TestWriteOperations:
             "set_variable",
             {"program": prog,
              "name_or_address": "add",
-             "variable_name": original_name,
+             "name_or_storage": original_name,
              "new_name": new_name},
         )
         assert result["success"] is True
@@ -788,7 +791,7 @@ class TestWriteOperations:
             "set_variable",
             {"program": prog,
              "name_or_address": "add",
-             "variable_name": new_name,
+             "name_or_storage": new_name,
              "new_name": original_name},
         )
 
@@ -805,7 +808,7 @@ class TestWriteOperations:
             "set_variable",
             {"program": prog,
              "name_or_address": "add",
-             "variable_name": target["name"],
+             "name_or_storage": target["name"],
              "type_name": "uint"},
         )
         assert result["success"] is True
@@ -823,7 +826,7 @@ class TestWriteOperations:
         ghidra_server.ok(
             "set_variable",
             {"program": prog, "name_or_address": "add",
-             "variable_name": target["name"], "type_name": original_type},
+             "name_or_storage": target["name"], "type_name": original_type},
         )
 
     def test_set_variable_requires_a_change(
@@ -835,7 +838,7 @@ class TestWriteOperations:
         resp = ghidra_server.call(
             "set_variable",
             {"program": prog, "name_or_address": "add",
-             "variable_name": variables[0]["name"]},
+             "name_or_storage": variables[0]["name"]},
         )
         assert resp["ok"] is False
         error = resp.get("error", "")
@@ -850,7 +853,7 @@ class TestWriteOperations:
         resp = ghidra_server.call(
             "set_variable",
             {"program": prog, "name_or_address": "add",
-             "variable_name": variables[0]["name"],
+             "name_or_storage": variables[0]["name"],
              "type_name": "NoSuchTypeXyz"},
         )
         assert resp["ok"] is False
@@ -862,7 +865,7 @@ class TestWriteOperations:
             "set_variable",
             {"program": prog,
              "name_or_address": "add",
-             "variable_name": "definitely_not_a_real_variable_xyz",
+             "name_or_storage": "definitely_not_a_real_variable_xyz",
              "new_name": "whatever"},
         )
         assert resp["ok"] is False
@@ -871,6 +874,25 @@ class TestWriteOperations:
         # to a decompiler temporary.
         assert "not found" in error.lower()
         assert "decompiler temporary" not in error
+
+
+
+# ---------------------------------------------------------------------------
+# 11b. Naming decompiler temporaries
+# ---------------------------------------------------------------------------
+
+class TestTemporaryNames:
+    """
+    Naming values the program database does not hold, which has to go through the
+    decompiler's own view of a function.
+
+    Write tests use permissive (no-rules) naming — rules enforcement is
+    covered by the fast RulesEngineTest unit tests.
+
+    Its own class because these are the slowest tests in the suite and each of them
+    decompiles: as a separate scope they run on their own xdist worker instead of
+    queueing behind the rest of the write tests.
+    """
 
     def test_set_variable_names_a_decompiler_temporary(
             self, ghidra_server: GhidraClient, prog: str):
@@ -884,7 +906,7 @@ class TestWriteOperations:
             "set_variable",
             {"program": prog,
              "name_or_address": found_func,
-             "variable_name": found_temp,
+             "name_or_storage": found_temp,
              "new_name": "named_temp"},
         )
         if not resp["ok"]:
@@ -915,7 +937,7 @@ class TestWriteOperations:
             "set_variable",
             {"program": prog,
              "name_or_address": found_func,
-             "variable_name": found_temp,
+             "name_or_storage": found_temp,
              "type_name": "uint"},
         )
         assert resp["ok"] is False
@@ -945,7 +967,7 @@ class TestWriteOperations:
         first = ghidra_server.call(
             "set_variable",
             {"program": prog, "name_or_address": "register_churn",
-             "variable_name": temporaries[-1], "new_name": "seq_last"},
+             "name_or_storage": temporaries[-1], "new_name": "seq_last"},
         )
         if not first["ok"]:
             pytest.skip(f"the last temporary could not be named: {first['error']}")
@@ -953,55 +975,173 @@ class TestWriteOperations:
         second = ghidra_server.call(
             "set_variable",
             {"program": prog, "name_or_address": "register_churn",
-             "variable_name": temporaries[-2], "new_name": "seq_second_last"},
+             "name_or_storage": temporaries[-2], "new_name": "seq_second_last"},
         )
         assert second["ok"], (
             f"renaming {temporaries[-2]} is still valid after naming {temporaries[-1]}, "
             f"but was refused: {second.get('error')}"
         )
 
-    def test_rename_of_a_renumbered_temporary_is_refused(
+    def _temporary_identities(self, client: GhidraClient, prog: str,
+                              func: str) -> list[tuple[str, str]]:
+        """(storage identity, current name) per auto-named temporary, in numbering order."""
+        variables = client.ok(
+            "get_function_variables", {"program": prog, "name_or_address": func},
+        )["variables"]
+        entries = [
+            (f"{v['storage']}@{v['defined_at']}", v["name"])
+            for v in variables
+            if v["kind"] == "temporary" and _TEMP_NAME_RE.fullmatch(v["name"])
+        ]
+        return sorted(entries, key=lambda e: int(re.search(r"\d+$", e[1]).group()))
+
+    def test_a_whole_function_is_named_from_one_read_by_the_names_it_showed(
             self, ghidra_server: GhidraClient, prog: str):
-        # Naming an early temporary renumbers every later one, so a second rename planned from
-        # the same reading would land on a different value. That must fail, not succeed quietly.
-        temporaries = self._temporaries(ghidra_server, prog, "register_churn2")
-        if len(temporaries) < 2:
+        # Naming a temporary renumbers every later one — a side effect of this server's own
+        # write, in the window between the caller's read and its next write. So a series of
+        # renames planned from a single read must each land on the value that name was read
+        # against, not on whichever value carries the name by the time the write arrives.
+        before = self._temporary_identities(ghidra_server, prog, "register_churn2")
+        if len(before) < 2:
             pytest.skip("register_churn2 has too few temporaries to renumber")
+
+        applied = {}
+        for index, (identity, name) in enumerate(before):
+            # Reading between writes would refresh the record and defeat the test: every call
+            # here is planned from the one read above, as an agent's would be.
+            resp = ghidra_server.call(
+                "set_variable",
+                {"program": prog, "name_or_address": "register_churn2",
+                 "name_or_storage": name, "new_name": f"from_one_read_{index}"},
+            )
+            if not resp["ok"]:
+                # Some values genuinely cannot be pinned to storage. That is a different
+                # failure, and it must not be reported as the name having gone stale.
+                assert "no longer a variable of its own" not in resp["error"], (
+                    f"{name} was renumbered, not dissolved: {resp['error']}"
+                )
+                continue
+            applied[f"from_one_read_{index}"] = identity
+            reported = resp["result"].get("resolved_storage")
+            if reported is not None:
+                assert reported == identity, (
+                    f"naming '{name}' followed {reported}, but that name was read against "
+                    f"{identity}"
+                )
+        if len(applied) < 2:
+            pytest.skip("too few of register_churn2's temporaries could be committed")
+
+        names = {
+            v["name"] for v in ghidra_server.ok(
+                "get_function_variables",
+                {"program": prog, "name_or_address": "register_churn2"},
+            )["variables"]
+        }
+        assert set(applied) <= names, (
+            f"every rename must survive the next decompile as a distinct variable. "
+            f"Applied {sorted(applied)}, function now has {sorted(names)}"
+        )
+
+    def test_a_script_run_stops_names_resolving_through_an_earlier_read(
+            self, ghidra_server: GhidraClient, prog: str):
+        # A script can rename and retype anything, and can show the caller names no read here
+        # ever served, so what was recorded before it ran is no longer an account of what the
+        # caller has seen. After one runs, a renumbered name is nobody's known value again.
+        before = self._temporary_identities(ghidra_server, prog, "register_churn4")
+        if len(before) < 2:
+            pytest.skip("register_churn4 has too few temporaries to renumber")
 
         first = ghidra_server.call(
             "set_variable",
-            {"program": prog, "name_or_address": "register_churn2",
-             "variable_name": temporaries[0], "new_name": "stale_first"},
+            {"program": prog, "name_or_address": "register_churn4",
+             "name_or_storage": before[0][1], "new_name": "before_script"},
         )
         if not first["ok"]:
             pytest.skip(f"the first temporary could not be named: {first['error']}")
 
-        stale = ghidra_server.call(
-            "set_variable",
-            {"program": prog, "name_or_address": "register_churn2",
-             "variable_name": temporaries[1], "new_name": "stale_second"},
-        )
-        assert stale["ok"] is False, (
-            f"{temporaries[1]} was renumbered by naming {temporaries[0]} and must not be renamed "
-            "from the stale reading"
-        )
-        error = stale["error"]
-        assert "no longer refers" in error
-        # The fix is only actionable if the error says what the value is called now, and it must
-        # never suggest the name that took its place — that is a different value.
-        assert "now called" in error or "no longer a variable" in error
-        assert "Did you mean" not in error
-        assert "register_churn2" in error
+        # Runs with no args, so it prints its usage and changes nothing — the invalidation is
+        # on the run itself, because what an arbitrary script did cannot be known from here.
+        ghidra_server.ok("run_script", {"program": prog, "filename": "PEAnalyser.java"})
 
-        # Re-reading clears it: the check is against a stale reading, not a lock on the function.
-        current = self._temporaries(ghidra_server, prog, "register_churn2")
-        if current:
-            retry = ghidra_server.call(
-                "set_variable",
-                {"program": prog, "name_or_address": "register_churn2",
-                 "variable_name": current[0], "new_name": "after_reread"},
+        after = ghidra_server.call(
+            "set_variable",
+            {"program": prog, "name_or_address": "register_churn4",
+             "name_or_storage": before[1][1], "new_name": "after_script"},
+        )
+        if after["ok"]:
+            assert after["result"].get("resolved_storage") is None, (
+                "the read that recorded this name was superseded by a script run, so the write "
+                "must not still be resolved through it"
             )
-            assert retry["ok"] or "did not keep it" in retry["error"], retry
+        else:
+            assert "no longer a variable of its own" not in after["error"], (
+                "with the record cleared there is nothing to call stale: " + after["error"]
+            )
+
+    def test_temporaries_are_nameable_by_storage_from_a_single_reading(
+            self, ghidra_server: GhidraClient, prog: str):
+        # Storage is derived from the code, so unlike the decompiler's numbering it survives
+        # naming a neighbour — which is what lets a whole function be named from one read.
+        identities = self._temporary_identities(ghidra_server, prog, "register_churn3")
+        if len(identities) < 2:
+            pytest.skip("register_churn3 has too few temporaries for a two-step rename")
+
+        named = []
+        for index, (identity, _) in enumerate(identities[:2]):
+            resp = ghidra_server.call(
+                "set_variable",
+                {"program": prog, "name_or_address": "register_churn3",
+                 "name_or_storage": identity, "new_name": f"by_storage_{index}"},
+            )
+            if resp["ok"]:
+                named.append(f"by_storage_{index}")
+            else:
+                assert "no longer a variable of its own" not in resp["error"], (
+                    f"storage identity {identity} must not go stale when a neighbour is "
+                    f"named: {resp['error']}"
+                )
+        if not named:
+            pytest.skip("no temporary in register_churn3 could be committed")
+
+        current = {
+            v["name"] for v in ghidra_server.ok(
+                "get_function_variables",
+                {"program": prog, "name_or_address": "register_churn3"},
+            )["variables"]
+        }
+        assert set(named) <= current
+
+    def test_storage_that_holds_no_variable_is_reported_as_storage(
+            self, ghidra_server: GhidraClient, prog: str):
+        resp = ghidra_server.call(
+            "set_variable",
+            {"program": prog, "name_or_address": "register_churn3",
+             "name_or_storage": "EAX:4@0x00000000", "new_name": "nowhere"},
+        )
+        assert resp["ok"] is False
+        error = resp["error"]
+        assert "is stored at" in error
+        assert "get_function_variables" in error
+        # It is storage, not a misspelled name: no name suggestion belongs here.
+        assert "Did you mean" not in error
+
+
+
+# ---------------------------------------------------------------------------
+# 11c. Prototypes and parameters
+# ---------------------------------------------------------------------------
+
+class TestPrototypeWrites:
+    """
+    Signatures and parameter types.
+
+    Write tests use permissive (no-rules) naming — rules enforcement is
+    covered by the fast RulesEngineTest unit tests.
+
+    Ordered within the class: test_set_parameter_type retypes a parameter that
+    test_set_function_prototype declares on compute(), so the two must stay together
+    and in this order.
+    """
 
     def test_set_function_prototype(
             self, ghidra_server: GhidraClient, prog: str):
@@ -1071,6 +1211,20 @@ class TestWriteOperations:
         assert result["success"] is True
         assert result["parameter_index"] == 0
         assert result["type_name"] == "int"
+
+
+
+# ---------------------------------------------------------------------------
+# 11d. Globals
+# ---------------------------------------------------------------------------
+
+class TestGlobalWrites:
+    """
+    Writes to memory-backed data symbols rather than to anything inside a function.
+
+    Write tests use permissive (no-rules) naming — rules enforcement is
+    covered by the fast RulesEngineTest unit tests.
+    """
 
     def _global_address(self, ghidra_server: GhidraClient, prog: str) -> str:
         result = ghidra_server.ok("list_globals", {"program": prog, "limit": 200})
@@ -1148,13 +1302,28 @@ class TestWriteOperations:
             "set_variable",
             {"program": prog,
              "name_or_address": "add",
-             "variable_name": "set_variable_global_probe",
+             "name_or_storage": "set_variable_global_probe",
              "new_name": "whatever"},
         )
         assert resp["ok"] is False
         error = resp.get("error", "")
         assert "global symbol" in error
         assert "set_global" in error
+
+
+
+# ---------------------------------------------------------------------------
+# 11e. Comments
+# ---------------------------------------------------------------------------
+
+class TestCommentWrites:
+    """
+    set_comment deliberately does not count as a recorded finding, so these leave
+    the read budget where they found it.
+
+    Write tests use permissive (no-rules) naming — rules enforcement is
+    covered by the fast RulesEngineTest unit tests.
+    """
 
     def test_set_comment(self, ghidra_server: GhidraClient, prog: str):
         addr = _func_address(ghidra_server, prog, "add")
@@ -1207,7 +1376,7 @@ class TestWriteOperations:
 
 
 # ---------------------------------------------------------------------------
-# 11b. Batched writes
+# 11f. Batched writes
 # ---------------------------------------------------------------------------
 
 class TestBatchedWrites:
@@ -1234,7 +1403,7 @@ class TestBatchedWrites:
                 "tool": "set_variable",
                 "calls": [
                     {"program": prog, "name_or_address": "add",
-                     "variable_name": old, "new_name": new}
+                     "name_or_storage": old, "new_name": new}
                     for old, new in zip(originals, renamed)
                 ],
             },
@@ -1252,7 +1421,7 @@ class TestBatchedWrites:
                 "tool": "set_variable",
                 "calls": [
                     {"program": prog, "name_or_address": "add",
-                     "variable_name": new, "new_name": old}
+                     "name_or_storage": new, "new_name": old}
                     for old, new in zip(originals, renamed)
                 ],
             },
@@ -1268,9 +1437,9 @@ class TestBatchedWrites:
                 "tool": "set_variable",
                 "calls": [
                     {"program": prog, "name_or_address": "add",
-                     "variable_name": "no_such_variable_xyz", "new_name": "never_applied"},
+                     "name_or_storage": "no_such_variable_xyz", "new_name": "never_applied"},
                     {"program": prog, "name_or_address": "add",
-                     "variable_name": original, "new_name": "batch_partial_ok"},
+                     "name_or_storage": original, "new_name": "batch_partial_ok"},
                 ],
             },
         )
@@ -1283,7 +1452,7 @@ class TestBatchedWrites:
         ghidra_server.ok(
             "set_variable",
             {"program": prog, "name_or_address": "add",
-             "variable_name": "batch_partial_ok", "new_name": original},
+             "name_or_storage": "batch_partial_ok", "new_name": original},
         )
 
     def test_batch_set_comment(self, ghidra_server: GhidraClient, prog: str):

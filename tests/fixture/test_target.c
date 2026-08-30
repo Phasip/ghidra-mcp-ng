@@ -1,7 +1,8 @@
 /*
  * test_target.c — Minimal C binary for ghidra-mcp-ng integration tests.
  *
- * Functions:   add, multiply, compute, main, call_via_ptr, register_churn, register_churn2, check_64bit_magic
+ * Functions:   add, multiply, compute, main, call_via_ptr, register_churn, register_churn2,
+ *              register_churn3, register_churn4, check_64bit_magic
  * Call graph:  main -> compute -> add
  *              main -> compute -> multiply -> add
  *              call_via_ptr -> add (via function pointer — creates DATA ref to add)
@@ -71,6 +72,34 @@ int register_churn2(int seed, int count) {
         int scaled = add(acc, i * 7);
         int mixed = multiply(scaled, 3) ^ acc;
         acc = mixed - scaled;
+    }
+    return acc + i;
+}
+
+/* A third one: naming temporaries by storage needs a function whose numbering no earlier
+ * test has already disturbed. */
+__attribute__((optimize("O2")))
+int register_churn3(int seed, int count) {
+    int acc = seed + 0x31;
+    int i;
+    for (i = 0; i < count; i++) {
+        int scaled = multiply(acc ^ i, 5);
+        int mixed = add(scaled, acc) ^ (acc - i);
+        acc = mixed + scaled;
+    }
+    return acc - i;
+}
+
+/* A fourth one: a test that a script run stops names resolving through an earlier read needs
+ * numbering no other test has already disturbed. */
+__attribute__((optimize("O2")))
+int register_churn4(int seed, int count) {
+    int acc = seed - 0x17;
+    int i;
+    for (i = 0; i < count; i++) {
+        int scaled = add(acc, i ^ 9);
+        int mixed = multiply(scaled ^ acc, 7) + i;
+        acc = mixed ^ scaled;
     }
     return acc + i;
 }

@@ -86,6 +86,7 @@ class ToolResourceIntegrationTest {
     private ReadTools readTools;
     private WriteTools writeTools;
     private ScriptTool scriptTool;
+    private TemporaryNames temporaryNames;
     private String programName;
 
     @BeforeAll
@@ -145,9 +146,12 @@ class ToolResourceIntegrationTest {
 
         programManager = new ProgramManager(ghidraProject);
         RulesEngine rules = RulesEngine.load((File) null);
-        writeTools = new WriteTools(programManager, rules, new TemporaryNames());
-        readTools = new ReadTools(programManager, rules, writeTools, new TemporaryNames());
-        scriptTool = new ScriptTool(programManager, extensionScriptsDir);
+        // One record shared by all three, as the server wires it: a read records what it showed
+        // and a write resolves against that record, so separate instances would test neither.
+        temporaryNames = new TemporaryNames();
+        writeTools = new WriteTools(programManager, rules, temporaryNames);
+        readTools = new ReadTools(programManager, rules, writeTools, temporaryNames);
+        scriptTool = new ScriptTool(programManager, temporaryNames, extensionScriptsDir);
     }
 
     @org.junit.jupiter.api.AfterAll
@@ -1149,7 +1153,7 @@ class ToolResourceIntegrationTest {
         WriteTools.SetVariableResponse response = writeTools.setVariable(json(
                 "program", programName,
                 "name_or_address", FN_ADD,
-                "variable_name", originalName,
+                "name_or_storage", originalName,
                 "new_name", "renamed_add_variable"));
         assertTrue(response.success());
 
@@ -1164,7 +1168,7 @@ class ToolResourceIntegrationTest {
                 () -> writeTools.setVariable(json(
                         "program", programName,
                         "name_or_address", "__no_such_fn__",
-                        "variable_name", "x",
+                        "name_or_storage", "x",
                         "new_name", "y")));
     }
 
@@ -1182,7 +1186,7 @@ class ToolResourceIntegrationTest {
                 () -> writeTools.setVariable(json(
                         "program", programName,
                         "name_or_address", FN_ADD,
-                        "variable_name", "global_probe_symbol",
+                        "name_or_storage", "global_probe_symbol",
                         "new_name", "whatever")));
         assertTrue(ex.getMessage().contains("global symbol")
                         && ex.getMessage().contains("set_global"),
@@ -1206,14 +1210,14 @@ class ToolResourceIntegrationTest {
         writeTools.setVariable(json(
                 "program", programName,
                 "name_or_address", FN_ADD,
-                "variable_name", originalName,
+                "name_or_storage", originalName,
                 "new_name", "shadow_probe_symbol"));
 
         // The second write addresses the local by the name it now shares with the label.
         WriteTools.SetVariableResponse response = writeTools.setVariable(json(
                 "program", programName,
                 "name_or_address", FN_ADD,
-                "variable_name", "shadow_probe_symbol",
+                "name_or_storage", "shadow_probe_symbol",
                 "new_name", originalName));
         assertTrue(response.success());
         assertEquals(originalName, response.name());
@@ -1903,7 +1907,7 @@ class ToolResourceIntegrationTest {
         writeTools.setVariable(json(
                 "program", programName,
                 "name_or_address", FN_ADD,
-                "variable_name", originalName,
+                "name_or_storage", originalName,
                 "new_name", "renamed_persist_var"));
 
         reopenManager();
