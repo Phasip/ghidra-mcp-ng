@@ -26,12 +26,12 @@ Rename a function.
 
 ### `set_comment`
 
-Set a comment on a code unit at the specified address.
+Set a comment on the code unit at an address, or at a function or symbol's address.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|:--------:|---------|-------------|
 | `program` | string | yes |  | Program name; see list_project_files. |
-| `address` | string | yes |  | 0x-prefixed hex address. |
+| `name_or_address` | string | yes |  | 0x-prefixed hex address, or a function or symbol name (case-sensitive) to comment at its address. |
 | `comment` | string | yes |  | Comment text (max 4096 chars) |
 | `comment_type` | string |  |  | Comment type: PRE, POST, EOL, PLATE, or REPEATABLE |
 
@@ -96,12 +96,12 @@ Decompile a function to C pseudocode.
 
 ### `get_disassembly`
 
-Disassemble a fixed number of instructions from an address.
+Disassemble a fixed number of instructions from an address, function, or symbol.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|:--------:|---------|-------------|
 | `program` | string | yes |  | Program name; see list_project_files. |
-| `address` | string | yes |  | 0x-prefixed hex address, or a symbol name (case-sensitive) to start at its address. |
+| `name_or_address` | string | yes |  | 0x-prefixed hex address, or a function or symbol name (case-sensitive) to start at its address. |
 | `limit` | integer (int32) |  | 20 | Max instructions (max 2000); when more follow, 'truncated' is true and 'next_address' is the first not returned. |
 
 ### `search_constant_references`

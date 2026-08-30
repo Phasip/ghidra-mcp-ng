@@ -51,6 +51,7 @@ import java.util.List;
 
 import static com.ghidramcpng.tools.ToolHelpers.findDataType;
 import static com.ghidramcpng.tools.ToolHelpers.findFunction;
+import static com.ghidramcpng.tools.ToolHelpers.findSymbolAddress;
 import static com.ghidramcpng.tools.ToolHelpers.optional;
 import static com.ghidramcpng.tools.ToolHelpers.optionalArray;
 import static com.ghidramcpng.tools.ToolHelpers.optionalBool;
@@ -622,7 +623,8 @@ public class WriteTools {
 
     @POST
     @Path("/set_comment")
-    @Operation(tags = "Annotation", operationId = "set_comment", summary = "Set a comment on a code unit at the specified address.")
+    @Operation(tags = "Annotation", operationId = "set_comment",
+            summary = "Set a comment on the code unit at an address, or at a function or symbol's address.")
     @ApiResponse(responseCode = "200", description = "Set comment result",
             content = @Content(schema = @Schema(implementation = SetCommentResponse.class)))
     public SetCommentResponse setComment(
@@ -632,7 +634,7 @@ public class WriteTools {
                     content = @Content(schema = @Schema(implementation = SetCommentRequest.class)))
             JsonObject request) {
         String programName = required(request, "program");
-        String address = required(request, "address");
+        String target = required(request, "name_or_address");
         String comment = requireMaxLength(required(request, "comment"), "comment", MAX_COMMENT_LENGTH);
         String commentTypeName = optional(request, "comment_type", "PRE");
 
@@ -649,7 +651,7 @@ public class WriteTools {
         Program program = openProgram(programName);
         // Resolve and validate before the transaction opens (coding standard 5) — the comment
         // rules need the enclosing function, which is a listing read.
-        var addr = toAddress(program, address);
+        Address addr = findSymbolAddress(program, target);
         if (rules.hasCommentRules()) {
             Function containing = program.getFunctionManager().getFunctionContaining(addr);
             rules.validateComment(commentTypeName.toUpperCase(), comment,
@@ -657,16 +659,17 @@ public class WriteTools {
                     () -> countAutoNamedVariables(containing));
         }
 
-        runTransaction(program, "Set comment @ " + address, () -> {
+        runTransaction(program, "Set comment @ " + addr, () -> {
             var cu = program.getListing().getCodeUnitAt(addr);
             if (cu == null) {
-                throw new IllegalArgumentException("No code unit at address " + address + ". " +
-                        "Ensure the address is within a defined function or data block, and uses the 0x prefix.");
+                throw new IllegalArgumentException("No code unit starts at 0x" + addr +
+                        " (resolved from '" + target + "'). A comment attaches to an instruction or " +
+                        "a defined data item; use get_disassembly to find the address of one.");
             }
             cu.setComment(commentType, comment.isEmpty() ? null : comment);
         });
 
-        return new SetCommentResponse(true, address, commentTypeName.toUpperCase());
+        return new SetCommentResponse(true, addr, commentTypeName.toUpperCase());
     }
 
     /**
@@ -1371,8 +1374,8 @@ public class WriteTools {
     public record SetCommentRequest(
             @Schema(description = "Program name; see list_project_files.", requiredMode = Schema.RequiredMode.REQUIRED)
             String program,
-            @Schema(description = "0x-prefixed hex address.", requiredMode = Schema.RequiredMode.REQUIRED)
-            String address,
+            @Schema(description = "0x-prefixed hex address, or a function or symbol name (case-sensitive) to comment at its address.", requiredMode = Schema.RequiredMode.REQUIRED)
+            String name_or_address,
             @Schema(description = "Comment text (max 4096 chars)", requiredMode = Schema.RequiredMode.REQUIRED)
             String comment,
             @Schema(description = "Comment type: PRE, POST, EOL, PLATE, or REPEATABLE")
@@ -1435,7 +1438,7 @@ public class WriteTools {
             String field_name, int ordinal, String type_name) {
     }
 
-    public record SetCommentResponse(boolean success, String address, String comment_type) {
+    public record SetCommentResponse(boolean success, Address address, String comment_type) {
     }
 
     public record ImportBinaryRequest(

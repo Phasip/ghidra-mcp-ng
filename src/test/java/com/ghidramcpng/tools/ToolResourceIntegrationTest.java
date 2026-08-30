@@ -308,14 +308,28 @@ class ToolResourceIntegrationTest {
     }
 
     @Test
-    void setComment_requiresHexPrefix() {
+    void setComment_bareHexIsReportedAsAMissingPrefix_notAsAMissingSymbol() {
         Address addAddress = functionAddress(readTools.searchFunctions(programName, "", 200).functions(), FN_ADD);
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
                 () -> writeTools.setComment(json(
                         "program", programName,
-                        "address", addAddress.toString(),
+                        "name_or_address", addAddress.toString(),
                         "comment", "test",
                         "comment_type", "PRE")));
+        assertTrue(e.getMessage().contains("0x" + addAddress),
+                "the fix is the prefixed spelling, so it has to be in the message: " + e.getMessage());
+    }
+
+    @Test
+    void setComment_acceptsAFunctionName() {
+        Address addAddress = functionAddress(readTools.searchFunctions(programName, "", 200).functions(), FN_ADD);
+        var response = writeTools.setComment(json(
+                "program", programName,
+                "name_or_address", FN_ADD,
+                "comment", "named-target comment",
+                "comment_type", "PLATE"));
+        assertTrue(response.success());
+        assertEquals(addAddress, response.address());
     }
 
     // -----------------------------------------------------------------------------------
@@ -371,7 +385,7 @@ class ToolResourceIntegrationTest {
                 tools.read().searchFunctions(programName, "", 200).functions(), FN_ADD);
         tools.write().setComment(json(
                 "program", programName,
-                "address", "0x" + addAddress,
+                "name_or_address", "0x" + addAddress,
                 "comment", "a note that records nothing a later session can read",
                 "comment_type", "PLATE"));
         assertThrows(com.ghidramcpng.rules.NamingRuleViolation.class,
@@ -461,7 +475,7 @@ class ToolResourceIntegrationTest {
         var violation = assertThrows(com.ghidramcpng.rules.NamingRuleViolation.class,
                 () -> restricted.setComment(json(
                         "program", programName,
-                        "address", "0x" + addAddress,
+                        "name_or_address", "0x" + addAddress,
                         "comment", "x".repeat(21),
                         "comment_type", "PLATE")));
         assertTrue(violation.getMessage().contains("20"),
@@ -474,7 +488,7 @@ class ToolResourceIntegrationTest {
 
         assertDoesNotThrow(() -> restricted.setComment(json(
                 "program", programName,
-                "address", "0x" + addAddress,
+                "name_or_address", "0x" + addAddress,
                 "comment", "short enough",
                 "comment_type", "PLATE")));
     }
@@ -494,7 +508,7 @@ class ToolResourceIntegrationTest {
             var violation = assertThrows(com.ghidramcpng.rules.NamingRuleViolation.class,
                     () -> restricted.setComment(json(
                             "program", programName,
-                            "address", "0x" + addAddress,
+                            "name_or_address", "0x" + addAddress,
                             "comment", "what this function does",
                             "comment_type", "PLATE")));
             assertTrue(violation.getMessage().contains(autoName), violation.getMessage());
@@ -504,7 +518,7 @@ class ToolResourceIntegrationTest {
             // An EOL comment is unaffected — the rule is configured for PLATE only.
             assertDoesNotThrow(() -> restricted.setComment(json(
                     "program", programName,
-                    "address", "0x" + addAddress,
+                    "name_or_address", "0x" + addAddress,
                     "comment", "still allowed",
                     "comment_type", "EOL")));
         } finally {
@@ -514,7 +528,7 @@ class ToolResourceIntegrationTest {
 
         assertDoesNotThrow(() -> restricted.setComment(json(
                 "program", programName,
-                "address", "0x" + addAddress,
+                "name_or_address", "0x" + addAddress,
                 "comment", "allowed now that it has a real name",
                 "comment_type", "PLATE")));
     }
@@ -540,7 +554,7 @@ class ToolResourceIntegrationTest {
                 "comments:\n  PLATE:\n    max_auto_named_variables: " + autoNamed + "\n");
         assertDoesNotThrow(() -> atLimit.setComment(json(
                 "program", programName,
-                "address", "0x" + computeAddress,
+                "name_or_address", "0x" + computeAddress,
                 "comment", "at the limit",
                 "comment_type", "PLATE")));
 
@@ -553,7 +567,7 @@ class ToolResourceIntegrationTest {
         var violation = assertThrows(com.ghidramcpng.rules.NamingRuleViolation.class,
                 () -> belowLimit.setComment(json(
                         "program", programName,
-                        "address", "0x" + computeAddress,
+                        "name_or_address", "0x" + computeAddress,
                         "comment", "one over the limit",
                         "comment_type", "PLATE")));
         assertTrue(violation.getMessage().contains("get_function_variables"),
@@ -566,7 +580,7 @@ class ToolResourceIntegrationTest {
         // writeTools is built with RulesEngine.load(null) — the permissive default.
         assertDoesNotThrow(() -> writeTools.setComment(json(
                 "program", programName,
-                "address", "0x" + addAddress,
+                "name_or_address", "0x" + addAddress,
                 "comment", "x".repeat(2000),
                 "comment_type", "PLATE")));
     }
@@ -1697,7 +1711,7 @@ class ToolResourceIntegrationTest {
 
         WriteTools.SetCommentResponse response = writeTools.setComment(json(
                 "program", programName,
-                "address", withHexPrefix(addAddress),
+                "name_or_address", withHexPrefix(addAddress),
                 "comment", commentText,
                 "comment_type", "PRE"));
         assertTrue(response.success());
@@ -1717,7 +1731,7 @@ class ToolResourceIntegrationTest {
         for (String type : List.of("POST", "EOL", "PLATE", "REPEATABLE")) {
             WriteTools.SetCommentResponse response = writeTools.setComment(json(
                     "program", programName,
-                    "address", withHexPrefix(addAddress),
+                    "name_or_address", withHexPrefix(addAddress),
                     "comment", "Comment type test: " + type,
                     "comment_type", type));
             assertTrue(response.success(), "setComment must succeed for type: " + type);
@@ -1734,7 +1748,7 @@ class ToolResourceIntegrationTest {
                 IllegalArgumentException.class,
                 () -> writeTools.setComment(json(
                         "program", programName,
-                        "address", withHexPrefix(addAddress),
+                        "name_or_address", withHexPrefix(addAddress),
                         "comment", "test",
                         "comment_type", "UNKNOWN_TYPE")));
         assertTrue(ex.getMessage().contains("UNKNOWN_TYPE"),
@@ -2053,7 +2067,7 @@ class ToolResourceIntegrationTest {
 
         writeTools.setComment(json(
                 "program", programName,
-                "address", withHexPrefix(addAddress),
+                "name_or_address", withHexPrefix(addAddress),
                 "comment", commentText,
                 "comment_type", "PRE"));
 

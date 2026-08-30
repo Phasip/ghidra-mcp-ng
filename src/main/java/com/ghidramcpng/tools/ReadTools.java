@@ -535,27 +535,27 @@ public class ReadTools {
         @GET
         @Path("/get_disassembly")
         @Operation(tags = "Code", operationId = "get_disassembly",
-            summary = "Disassemble a fixed number of instructions from an address.")
+            summary = "Disassemble a fixed number of instructions from an address, function, or symbol.")
         @ApiResponse(responseCode = "200", description = "Disassembly result",
             content = @Content(schema = @Schema(implementation = GetDisassemblyResponse.class)))
         public GetDisassemblyResponse getDisassembly(
             @Parameter(description = "Program name; see list_project_files.", required = true)
             @QueryParam("program") String programName,
-            @Parameter(description = "0x-prefixed hex address, or a symbol name (case-sensitive) to start at its address.", required = true)
-            @QueryParam("address") String addressText,
+            @Parameter(description = "0x-prefixed hex address, or a function or symbol name (case-sensitive) to start at its address.", required = true)
+            @QueryParam("name_or_address") String nameOrAddress,
             @Parameter(description = "Max instructions (max 2000); when more follow, 'truncated' is true and 'next_address' is the first not returned.")
             @QueryParam("limit") @DefaultValue("20") int limit) {
         Program program = openProgram(programName);
-        // Accept either a 0x-prefixed address or a symbol/function name so this endpoint is
-        // consistent with the name-or-address tools and does not force a separate lookup call.
-        Address start = resolveDisassemblyStart(program, requireText(addressText, "address"));
+        // Either spelling resolves here, which is why the parameter is name_or_address and not
+        // address: findSymbolAddress takes the 0x form as an address and anything else as a symbol.
+        Address start = findSymbolAddress(program, requireText(nameOrAddress, "name_or_address"));
         int validatedLimit = requireLimit(limit, 2000, "limit");
 
         Instruction current = program.getListing().getInstructionAt(start);
         if (current == null) {
             throw new IllegalArgumentException(
                 "No instruction starts at address " + start.toString() +
-                " (resolved from '" + addressText + "'). Provide an exact instruction address (use 0x prefix) " +
+                " (resolved from '" + nameOrAddress + "'). Provide an exact instruction address (use 0x prefix) " +
                 "or a function/symbol name. Use get_address_info first if you need segment/function context.");
         }
 
@@ -578,17 +578,6 @@ public class ReadTools {
         boolean truncated = current != null;
         Address nextAddress = current != null ? current.getAddress() : null;
         return new GetDisassemblyResponse(start, lines, lines.size(), truncated, nextAddress);
-        }
-
-        /**
-         * Resolve a get_disassembly start location. A 0x-prefixed value is parsed as a hex
-         * address; anything else is resolved as a case-sensitive symbol/function name.
-         */
-        private static Address resolveDisassemblyStart(Program program, String addressOrName) {
-            if (addressOrName.startsWith("0x") || addressOrName.startsWith("0X")) {
-                return toAddress(program, addressOrName);
-            }
-            return findSymbolAddress(program, addressOrName);
         }
 
     @GET
@@ -1568,7 +1557,7 @@ public class ReadTools {
                 required(args, "address"));
             case "get_disassembly" -> getDisassembly(
                 required(args, "program"),
-                required(args, "address"),
+                required(args, "name_or_address"),
                 optionalInt(args, "limit", 20));
             case "read_data" -> readData(
                 required(args, "program"),

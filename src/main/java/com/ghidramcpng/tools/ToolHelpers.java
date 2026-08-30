@@ -304,6 +304,13 @@ public final class ToolHelpers {
         if (matches.size() == 1) {
             return matches.get(0).getAddress();
         }
+        if (nameOrAddress.matches("[0-9a-fA-F]+")) {
+            // Hex digits with no prefix are an address the caller forgot to mark as one, not a
+            // symbol name — say that instead of sending them looking for a symbol.
+            throw new IllegalArgumentException(
+                    "'" + nameOrAddress + "' is missing the 0x prefix and matches no symbol name. " +
+                    "Write an address as 0x" + nameOrAddress + ".");
+        }
         throw new IllegalArgumentException(
                 "Symbol not found: '" + nameOrAddress + "'. " +
                 "Names are case-sensitive and match functions, globals, labels, and other symbols. " +

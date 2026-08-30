@@ -53,7 +53,7 @@ def _referenced_code_address(client: GhidraClient, prog: str) -> str | None:
     """
     for fn in ("multiply", "register_churn", "register_churn2", "compute", "main"):
         lines = client.ok(
-            "get_disassembly", {"program": prog, "address": fn, "limit": 100}
+            "get_disassembly", {"program": prog, "name_or_address": fn, "limit": 100}
         )["lines"]
         # Skip the entry point: it carries a real function symbol, not a dynamic label.
         body = [line["address"] for line in lines if line["function_name"] == fn][1:]
@@ -488,7 +488,7 @@ class TestDecompilation:
         addr = _func_address(ghidra_server, prog, "add")
         result = ghidra_server.ok(
             "get_disassembly",
-            {"program": prog, "address": _hex(addr), "limit": 5},
+            {"program": prog, "name_or_address": _hex(addr), "limit": 5},
         )
         assert result["count"] > 0
         assert len(result["lines"]) == result["count"]
@@ -497,7 +497,7 @@ class TestDecompilation:
         # A name resolves to its symbol address — no separate lookup needed.
         result = ghidra_server.ok(
             "get_disassembly",
-            {"program": prog, "address": "add", "limit": 5},
+            {"program": prog, "name_or_address": "add", "limit": 5},
         )
         assert result["count"] > 0
         assert len(result["lines"]) == result["count"]
@@ -507,7 +507,7 @@ class TestDecompilation:
         # A single-instruction window into a larger function must flag more remain.
         result = ghidra_server.ok(
             "get_disassembly",
-            {"program": prog, "address": _hex(addr), "limit": 1},
+            {"program": prog, "name_or_address": _hex(addr), "limit": 1},
         )
         assert result["truncated"] is True
         assert result["next_address"] is not None
@@ -518,7 +518,7 @@ class TestDecompilation:
         addr = _func_address(ghidra_server, prog, "add")
         resp = ghidra_server.call(
             "get_disassembly",
-            {"program": prog, "address": _hex(addr), "instructions": 5},
+            {"program": prog, "name_or_address": _hex(addr), "instructions": 5},
         )
         assert resp["ok"] is False
         assert "instructions" in resp["error"]
@@ -528,7 +528,7 @@ class TestDecompilation:
         addr = _func_address(ghidra_server, prog, "add")
         resp = ghidra_server.call(
             "get_disassembly",
-            {"program": prog, "address": _hex(addr), "limit": 2001},
+            {"program": prog, "name_or_address": _hex(addr), "limit": 2001},
         )
         assert resp["ok"] is False
         assert "2000" in resp["error"]
@@ -1163,7 +1163,7 @@ class TestWriteOperations:
         result = ghidra_server.ok(
             "set_comment",
             {"program": prog,
-             "address": _hex(addr),
+             "name_or_address": _hex(addr),
              "comment": comment_text,
              "comment_type": "PRE"},
         )
@@ -1173,10 +1173,24 @@ class TestWriteOperations:
         ghidra_server.ok(
             "set_comment",
             {"program": prog,
-             "address": _hex(addr),
+             "name_or_address": _hex(addr),
              "comment": "PLACEHOLDER",
              "comment_type": "PRE"},
         )
+
+    def test_set_comment_accepts_a_function_name(
+            self, ghidra_server: GhidraClient, prog: str):
+        # Same spelling as every other Annotation tool: a name resolves to its address.
+        addr = _func_address(ghidra_server, prog, "add")
+        result = ghidra_server.ok(
+            "set_comment",
+            {"program": prog,
+             "name_or_address": "add",
+             "comment": "named-target comment",
+             "comment_type": "PLATE"},
+        )
+        assert result["success"] is True
+        assert result["address"] == _hex(addr)
 
     def test_set_comment_requires_0x_prefix(self, ghidra_server: GhidraClient, prog: str):
         addr = _func_address(ghidra_server, prog, "add")
@@ -1184,7 +1198,7 @@ class TestWriteOperations:
         err = ghidra_server.call(
             "set_comment",
             {"program": prog,
-             "address": bare,
+             "name_or_address": bare,
              "comment": "test",
              "comment_type": "PRE"},
         )
@@ -1279,9 +1293,9 @@ class TestBatchedWrites:
             {
                 "tool": "set_comment",
                 "calls": [
-                    {"program": prog, "address": _hex(addr),
+                    {"program": prog, "name_or_address": _hex(addr),
                      "comment": "batch comment", "comment_type": "PRE"},
-                    {"program": prog, "address": _hex(addr),
+                    {"program": prog, "name_or_address": _hex(addr),
                      "comment": "batch eol", "comment_type": "EOL"},
                 ],
             },
@@ -1857,7 +1871,7 @@ class TestUnknownFieldRejection:
         address = _hex(_func_address(ghidra_server, prog, "main"))
         resp = ghidra_server.call(
             "set_comment",
-            {"program": prog, "address": address,
+            {"program": prog, "name_or_address": address,
              "comment": "plate please", "comment_kind": "PLATE"},
         )
         assert resp["ok"] is False
