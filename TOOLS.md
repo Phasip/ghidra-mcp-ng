@@ -24,16 +24,6 @@ Rename a function.
 | `name_or_address` | string | yes |  | Function name (case-sensitive) or 0x-prefixed hex entry point. |
 | `new_name` | string | yes |  | New function name (max 256 chars) |
 
-### `rename_global`
-
-Rename a global symbol (data, label, or import) by name or hex address.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|:--------:|---------|-------------|
-| `program` | string | yes |  | Program name; see list_project_files. |
-| `name_or_address` | string | yes |  | Current name or 0x-prefixed hex address of the global symbol |
-| `new_name` | string | yes |  | New symbol name (max 256 chars) |
-
 ### `set_comment`
 
 Set a comment on a code unit at the specified address.
@@ -56,6 +46,17 @@ Set a function's return type, calling convention, and parameter list.
 | `return_type_name` | string | yes |  | Data type to return, e.g. int, char *, MyStruct * |
 | `parameters` | array of object {name, type_name} |  |  | Ordered parameter list; each entry is {name, type_name}. Replaces the function's existing parameters — omit or pass an empty array for a no-argument function. |
 | `calling_convention` | string |  |  | Calling convention name (e.g. __cdecl, __stdcall, __fastcall, __thiscall). Use get_calling_conventions to see valid values for this program. |
+
+### `set_global`
+
+Rename and/or retype a global symbol (data, label, or import) by name or hex address.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|:--------:|---------|-------------|
+| `program` | string | yes |  | Program name; see list_project_files. |
+| `name_or_address` | string | yes |  | Current name or 0x-prefixed hex address of the global symbol |
+| `new_name` | string |  |  | New symbol name (max 256 chars); omit to keep the current one. |
+| `type_name` | string |  |  | Data type to assign, e.g. int, char *, MyStruct *; omit to keep the current one. Not valid on an external import. |
 
 ### `set_parameter_type`
 

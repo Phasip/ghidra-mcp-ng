@@ -13,11 +13,14 @@ import ghidra.program.model.pcode.HighSymbol;
 import ghidra.program.model.data.DataType;
 import ghidra.program.model.data.DataTypeComponent;
 import ghidra.program.model.data.DataTypeConflictHandler;
+import ghidra.program.model.data.DataUtilities;
 import ghidra.program.model.data.Structure;
 import ghidra.program.model.data.StructureDataType;
 import ghidra.program.model.listing.CommentType;
+import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Function.FunctionUpdateType;
+import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.Parameter;
 import ghidra.program.model.listing.ParameterImpl;
 import ghidra.program.model.listing.Program;
@@ -28,6 +31,7 @@ import ghidra.program.model.listing.VariableStorage;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.symbol.Symbol;
 import ghidra.program.model.symbol.SymbolType;
+import ghidra.program.model.util.CodeUnitInsertionException;
 import ghidra.util.exception.DuplicateNameException;
 import ghidra.util.exception.InvalidInputException;
 import io.swagger.v3.oas.annotations.Operation;
@@ -142,6 +146,18 @@ public class WriteTools {
         Function func = findFunction(program, funcRef);
         DataType dataType = typeName != null ? findDataType(program, typeName) : null;
         Variable found = findCommittedVariable(func, variableName);
+        if (found == null) {
+            // A global read out of a decompiled body reads like a local to the caller, but the
+            // decompiler never lists one among a function's variables. Say so here rather than
+            // after a decompile that would only report the name as missing.
+            Symbol global = globalSymbolNamed(program, variableName);
+            if (global != null) {
+                throw new IllegalArgumentException(
+                        "'" + variableName + "' is not a variable in function '" + func.getName() +
+                        "': it is a global symbol at " + global.getAddress() + ". Rename or retype " +
+                        "it with set_global, passing name_or_address='" + variableName + "'.");
+            }
+        }
         if (found == null || !hasStoredStorage(found)) {
             // Everything the database does not hold in stack or memory storage — every register
             // and intermediate value — has to be committed through the decompiler's own view.
@@ -176,37 +192,73 @@ public class WriteTools {
     }
 
     @POST
-    @Path("/rename_global")
-    @Operation(tags = "Annotation", operationId = "rename_global", summary = "Rename a global symbol (data, label, or import) by name or hex address.")
-    @ApiResponse(responseCode = "200", description = "Rename global result",
-            content = @Content(schema = @Schema(implementation = RenameGlobalResponse.class)))
-    public RenameGlobalResponse renameGlobal(
+    @Path("/set_global")
+    @Operation(tags = "Annotation", operationId = "set_global",
+            summary = "Rename and/or retype a global symbol (data, label, or import) by name or hex address.")
+    @ApiResponse(responseCode = "200", description = "Set global result",
+            content = @Content(schema = @Schema(implementation = SetGlobalResponse.class)))
+    public SetGlobalResponse setGlobal(
             @RequestBody(
                     required = true,
-                    description = "Rename global request",
-                    content = @Content(schema = @Schema(implementation = RenameGlobalRequest.class)))
+                    description = "Set global request",
+                    content = @Content(schema = @Schema(implementation = SetGlobalRequest.class)))
             JsonObject request) {
         String programName = required(request, "program");
         String nameOrAddress = required(request, "name_or_address");
-        String newName = requireMaxLength(required(request, "new_name"), "new_name", MAX_NAME_LENGTH);
+        String newName = optional(request, "new_name", null);
+        String typeName = optional(request, "type_name", null);
 
-        // Its own rule key, not function_name: a global's name is often *recovered* rather than
-        // inferred (a CMSIS peripheral, a symbol from a map file), and a recovered name is a fact,
-        // not a guess. Projects that want the maybe_/likely_ prefixes here can still configure it.
-        rules.validate("global_name", newName);
+        if (newName == null && typeName == null) {
+            throw new IllegalArgumentException(
+                    "Nothing to change for global '" + nameOrAddress + "': pass 'new_name', " +
+                    "'type_name', or both.");
+        }
+        if (newName != null) {
+            requireMaxLength(newName, "new_name", MAX_NAME_LENGTH);
+            // Its own rule key, not function_name: a global's name is often *recovered* rather than
+            // inferred (a CMSIS peripheral, a symbol from a map file), and a recovered name is a fact,
+            // not a guess. Projects that want the maybe_/likely_ prefixes here can still configure it.
+            rules.validate("global_name", newName);
+        }
 
         Program program = openProgram(programName);
-        runTransaction(program, "Rename global: " + nameOrAddress + " -> " + newName, () -> {
-            Symbol target = findGlobalSymbol(program, nameOrAddress);
-            try {
-                target.setName(newName, SourceType.USER_DEFINED);
-            } catch (DuplicateNameException e) {
+        Symbol target = findGlobalSymbol(program, nameOrAddress);
+        Address address = target.getAddress();
+        DataType dataType = null;
+        if (typeName != null) {
+            if (address.isExternalAddress()) {
                 throw new IllegalArgumentException(
-                        "A symbol named '" + newName + "' already exists. Use a unique name.");
+                        "'" + nameOrAddress + "' is an external import with no memory-backed storage " +
+                        "to retype. Only 'new_name' can be set on an import.");
+            }
+            dataType = findDataType(program, typeName);
+        }
+        DataType finalDataType = dataType;
+
+        runTransaction(program, "Set global: " + nameOrAddress, () -> {
+            if (finalDataType != null) {
+                try {
+                    DataUtilities.createData(program, address, finalDataType, -1,
+                            DataUtilities.ClearDataMode.CLEAR_ALL_CONFLICT_DATA);
+                } catch (CodeUnitInsertionException e) {
+                    throw new IllegalArgumentException(
+                            "Cannot apply type '" + typeName + "' at " + address + ": " + e.getMessage());
+                }
+            }
+            if (newName != null) {
+                try {
+                    target.setName(newName, SourceType.USER_DEFINED);
+                } catch (DuplicateNameException e) {
+                    throw new IllegalArgumentException(
+                            "A symbol named '" + newName + "' already exists. Use a unique name.");
+                }
             }
         });
 
-        return new RenameGlobalResponse(true, newName);
+        Data data = program.getListing().getDataAt(address);
+        return new SetGlobalResponse(true,
+                newName != null ? newName : target.getName(),
+                data != null ? data.getDataType().getName() : null);
     }
 
     @POST
@@ -882,23 +934,90 @@ public class WriteTools {
         if (nameOrAddress.startsWith("0x") || nameOrAddress.startsWith("0X")) {
             Address addr = toAddress(program, nameOrAddress);
             for (Symbol sym : program.getSymbolTable().getSymbols(addr)) {
-                if (sym.getSymbolType() != SymbolType.FUNCTION) {
-                    return sym;
+                if (isGlobalTarget(sym)) {
+                    return requireNamableGlobal(program, sym, nameOrAddress);
                 }
             }
             throw new IllegalArgumentException(
-                    "No renameable global symbol at address " + nameOrAddress + ". " +
+                    "No global symbol at address " + nameOrAddress + ". " +
                     "Use list_globals to find valid symbol names and addresses.");
         }
-        for (Symbol sym : program.getSymbolTable().getSymbols(nameOrAddress)) {
-            if (sym.getSymbolType() != SymbolType.FUNCTION) {
-                return sym;
-            }
+        Symbol found = globalSymbolNamed(program, nameOrAddress);
+        if (found != null) {
+            return requireNamableGlobal(program, found, nameOrAddress);
         }
         throw new IllegalArgumentException(
                 "Global symbol '" + nameOrAddress + "' not found. " +
                 "Names are case-sensitive. Use list_globals to find valid global symbol names, " +
                 "or pass a 0x-prefixed hex address.");
+    }
+
+    /**
+     * Refuses the targets that only *look* like globals. A dynamic symbol (DAT_/LAB_) is not stored
+     * in the database — Ghidra synthesises it for any referenced address — so naming one converts it
+     * into a permanent label wherever the address happens to point. That is what the agent wants at
+     * data, and a mistake everywhere else: at a code address it makes an untyped label that belongs
+     * to create_label, and offcut into a datum it marks a meaningless boundary. A symbol somebody
+     * already stored is always fine: its location was decided when it was created.
+     */
+    private static Symbol requireNamableGlobal(Program program, Symbol symbol, String nameOrAddress) {
+        Address addr = symbol.getAddress();
+        if (!symbol.isDynamic() || !addr.isMemoryAddress()) {
+            return symbol;
+        }
+
+        Instruction instruction = program.getListing().getInstructionContaining(addr);
+        if (instruction != null) {
+            Function containing = program.getFunctionManager().getFunctionContaining(addr);
+            throw new IllegalArgumentException(
+                    "'" + nameOrAddress + "' is the automatic label " + symbol.getName() + " at 0x" + addr +
+                    ", which is code: the instruction at 0x" + instruction.getAddress() +
+                    (containing != null ? " in function '" + containing.getName() + "'" : "") +
+                    ". set_global names data globals, so naming it would only leave an untyped label. " +
+                    "Use create_label to label a code address, or set_comment to record a note there.");
+        }
+
+        Data data = program.getListing().getDataContaining(addr);
+        if (data != null && data.isDefined() && !data.getMinAddress().equals(addr)) {
+            throw new IllegalArgumentException(
+                    "'" + nameOrAddress + "' is the automatic label " + symbol.getName() + " at 0x" + addr +
+                    ", which is inside the " + data.getDataType().getName() + " at 0x" + data.getMinAddress() +
+                    ", not its start. Pass 0x" + data.getMinAddress() + " to name that global, " +
+                    "or use create_label if you meant to label this offset.");
+        }
+        return symbol;
+    }
+
+    /** The global symbol named {@code name}, or null when nothing set_global can act on has it. */
+    private static Symbol globalSymbolNamed(Program program, String name) {
+        for (Symbol sym : program.getSymbolTable().getSymbols(name)) {
+            if (isGlobalTarget(sym)) {
+                return sym;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * True for the symbols set_global owns: data, labels and external imports. A function defined
+     * in the program belongs to rename_function, and a parameter or local — which lives in a
+     * function's frame, not in memory — belongs to set_variable, so neither may be matched by name
+     * here. An imported function is the exception: it has no body for rename_function to find, so
+     * set_global is the only tool that can name it.
+     */
+    private static boolean isGlobalTarget(Symbol symbol) {
+        Address address = symbol.getAddress();
+        if (address == null) {
+            return false;
+        }
+        if (address.isExternalAddress()) {
+            return true;
+        }
+        SymbolType type = symbol.getSymbolType();
+        return address.isMemoryAddress()
+                && type != SymbolType.FUNCTION
+                && type != SymbolType.PARAMETER
+                && type != SymbolType.LOCAL_VAR;
     }
 
     /**
@@ -1252,16 +1371,18 @@ public class WriteTools {
             String kind) {
     }
 
-    public record RenameGlobalRequest(
+    public record SetGlobalRequest(
             @Schema(description = "Program name; see list_project_files.", requiredMode = Schema.RequiredMode.REQUIRED)
             String program,
             @Schema(description = "Current name or 0x-prefixed hex address of the global symbol", requiredMode = Schema.RequiredMode.REQUIRED)
             String name_or_address,
-            @Schema(description = "New symbol name (max 256 chars)", requiredMode = Schema.RequiredMode.REQUIRED)
-            String new_name) {
+            @Schema(description = "New symbol name (max 256 chars); omit to keep the current one.")
+            String new_name,
+            @Schema(description = "Data type to assign, e.g. int, char *, MyStruct *; omit to keep the current one. Not valid on an external import.")
+            String type_name) {
     }
 
-    public record RenameGlobalResponse(boolean success, String new_name) {
+    public record SetGlobalResponse(boolean success, String name, String type_name) {
     }
 
     public record CreateLabelRequest(

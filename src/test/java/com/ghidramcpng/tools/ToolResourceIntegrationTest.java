@@ -25,8 +25,11 @@ import ghidra.framework.model.DomainFolder;
 import generic.jar.ResourceFile;
 import ghidra.program.model.listing.CodeUnit;
 import ghidra.program.model.listing.CommentType;
+import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.mem.MemoryBlock;
+import ghidra.program.model.symbol.RefType;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.symbol.Symbol;
 import ghidra.util.task.TaskMonitor;
@@ -450,7 +453,7 @@ class ToolResourceIntegrationTest {
     }
 
     // -----------------------------------------------------------------------------------
-    // Label and global naming rules — create_label and rename_global carry their own rule keys,
+    // Label and global naming rules — create_label and set_global carry their own rule keys,
     // because a label is often a *recovered* name (a CMSIS register, a map-file symbol) and a
     // recovered name is a fact, not an inference the maybe_/likely_ prefixes should mark.
     // -----------------------------------------------------------------------------------
@@ -501,9 +504,9 @@ class ToolResourceIntegrationTest {
     }
 
     @Test
-    void renameGlobal_isGovernedByGlobalNameRuleOnly() throws Exception {
+    void setGlobal_isGovernedByGlobalNameRuleOnly() throws Exception {
         Address target = functionAddress(readTools.searchFunctions(programName, "", 200).functions(), FN_COMPUTE);
-        // A label is a renameable global symbol, so it gives rename_global something to act on
+        // A label is a renameable global symbol, so it gives set_global something to act on
         // without depending on which data symbols the analyzer happened to recover.
         writeTools.createLabel(json(
                 "program", programName, "address", "0x" + target, "name", "rule_probe_symbol"));
@@ -513,17 +516,134 @@ class ToolResourceIntegrationTest {
                 + "  global_name:\n    pattern: \"^g_.*$\"\n    message: \"globals start with g_\"\n");
 
         var violation = assertThrows(com.ghidramcpng.rules.NamingRuleViolation.class,
-                () -> restricted.renameGlobal(json(
+                () -> restricted.setGlobal(json(
                         "program", programName,
                         "name_or_address", "rule_probe_symbol",
                         "new_name", "maybe_still_wrong")));
         assertTrue(violation.getMessage().contains("globals start with g_"),
                 "global_name is the rule that applies, not function_name: " + violation.getMessage());
 
-        assertDoesNotThrow(() -> restricted.renameGlobal(json(
+        assertDoesNotThrow(() -> restricted.setGlobal(json(
                 "program", programName,
                 "name_or_address", "rule_probe_symbol",
                 "new_name", "g_renamed_probe")));
+    }
+
+    @Test
+    void setGlobal_requiresAtLeastOneField() {
+        var ex = assertThrows(IllegalArgumentException.class,
+                () -> writeTools.setGlobal(json(
+                        "program", programName,
+                        "name_or_address", "g_renamed_probe")));
+        assertTrue(ex.getMessage().contains("new_name") && ex.getMessage().contains("type_name"),
+                "Error must name both fields the caller could have passed: " + ex.getMessage());
+    }
+
+    @Test
+    void setGlobal_canRetypeADataSymbolWithoutRenamingIt() throws Exception {
+        // A data block, not a function entry: applying a type clears conflicting *data*, and
+        // there is no clearing an instruction out of the way.
+        Address target = dataBlockAddress();
+        writeTools.createLabel(json(
+                "program", programName, "address", "0x" + target, "name", "retype_probe_symbol"));
+
+        WriteTools.SetGlobalResponse response = writeTools.setGlobal(json(
+                "program", programName,
+                "name_or_address", "retype_probe_symbol",
+                "type_name", "int"));
+
+        assertTrue(response.success());
+        assertEquals("retype_probe_symbol", response.name());
+        assertEquals("int", response.type_name());
+
+        Program program = programManager.getOrOpen(programName);
+        assertEquals("int", program.getListing().getDataAt(target).getDataType().getName());
+    }
+
+    @Test
+    void setGlobal_refusesToRetypeAnExternalImport() {
+        String importName = readTools.listImports(programName).imports().get(0).name();
+
+        var ex = assertThrows(IllegalArgumentException.class,
+                () -> writeTools.setGlobal(json(
+                        "program", programName,
+                        "name_or_address", importName,
+                        "type_name", "int")));
+        assertTrue(ex.getMessage().contains("external import"),
+                "Error must explain why an import cannot be retyped: " + ex.getMessage());
+    }
+
+    @Test
+    void setGlobal_refusesADynamicLabelAtACodeAddress() throws Exception {
+        Program program = programManager.getOrOpen(programName);
+        Address addEntry = functionAddress(readTools.searchFunctions(programName, "", 200).functions(), FN_ADD);
+        Address inBody = program.getListing().getInstructionAt(addEntry).getNext().getAddress();
+        Address from = functionAddress(readTools.searchFunctions(programName, "", 200).functions(), FN_MAIN);
+
+        // A reference is what makes Ghidra hand out a dynamic LAB_ for an address holding no
+        // stored symbol — exactly the situation a mistyped address lands in.
+        programManager.withTransaction(program, "reference a code address", () ->
+                program.getReferenceManager().addMemoryReference(
+                        from, inBody, RefType.DATA, SourceType.USER_DEFINED, 0));
+
+        var ex = assertThrows(IllegalArgumentException.class,
+                () -> writeTools.setGlobal(json(
+                        "program", programName,
+                        "name_or_address", "0x" + inBody,
+                        "new_name", "g_not_really_a_global")));
+        assertTrue(ex.getMessage().contains(FN_ADD),
+                "Error must name the function the address is in: " + ex.getMessage());
+        assertTrue(ex.getMessage().contains("create_label"),
+                "Error must point at the tool that does label a code address: " + ex.getMessage());
+        assertTrue(program.getSymbolTable().getPrimarySymbol(inBody).isDynamic(),
+                "A refused set_global must not leave a permanent label behind");
+    }
+
+    @Test
+    void setGlobal_refusesADynamicSymbolOffcutIntoDefinedData() throws Exception {
+        Program program = programManager.getOrOpen(programName);
+        Address stringStart =
+                readTools.searchDefinedStrings(programName, TEST_SENTINEL, 0, 10).strings().get(0).address();
+        Address offcut = stringStart.add(1);
+        Data containing = program.getListing().getDataContaining(offcut);
+        assertTrue(containing != null && containing.isDefined() && !containing.getMinAddress().equals(offcut),
+                "The sentinel string must be defined data the offcut address falls inside of");
+
+        Address from = functionAddress(readTools.searchFunctions(programName, "", 200).functions(), FN_MAIN);
+        programManager.withTransaction(program, "reference an offcut address", () ->
+                program.getReferenceManager().addMemoryReference(
+                        from, offcut, RefType.DATA, SourceType.USER_DEFINED, 0));
+
+        var ex = assertThrows(IllegalArgumentException.class,
+                () -> writeTools.setGlobal(json(
+                        "program", programName,
+                        "name_or_address", "0x" + offcut,
+                        "new_name", "g_offcut_probe")));
+        assertTrue(ex.getMessage().contains("0x" + stringStart),
+                "Error must give the address the caller should have passed: " + ex.getMessage());
+        assertTrue(program.getSymbolTable().getPrimarySymbol(offcut).isDynamic(),
+                "A refused set_global must not leave a permanent label behind");
+    }
+
+    @Test
+    void setGlobal_stillNamesADynamicDataSymbol() throws Exception {
+        // The case the gate must not break: an unnamed but referenced datum is the commonest
+        // set_global target there is in a stripped binary.
+        Program program = programManager.getOrOpen(programName);
+        Address target = unnamedDataAddress();
+        Address from = functionAddress(readTools.searchFunctions(programName, "", 200).functions(), FN_MAIN);
+        programManager.withTransaction(program, "reference an undefined datum", () ->
+                program.getReferenceManager().addMemoryReference(
+                        from, target, RefType.DATA, SourceType.USER_DEFINED, 0));
+
+        WriteTools.SetGlobalResponse response = writeTools.setGlobal(json(
+                "program", programName,
+                "name_or_address", "0x" + target,
+                "new_name", "g_dynamic_data_probe"));
+
+        assertTrue(response.success());
+        assertEquals("g_dynamic_data_probe", response.name());
+        assertEquals("g_dynamic_data_probe", program.getSymbolTable().getPrimarySymbol(target).getName());
     }
 
     @Test
@@ -913,6 +1033,57 @@ class ToolResourceIntegrationTest {
                         "name_or_address", "__no_such_fn__",
                         "variable_name", "x",
                         "new_name", "y")));
+    }
+
+    @Test
+    void setVariable_onAGlobal_pointsAtSetGlobal() throws Exception {
+        // A global read out of a decompiled body looks like any other name in the function, and
+        // the decompiler never lists one among its variables — so "not found" would send the
+        // caller looking in the wrong place.
+        Address target = functionAddress(
+                readTools.searchFunctions(programName, "", 200).functions(), FN_COMPUTE);
+        writeTools.createLabel(json(
+                "program", programName, "address", "0x" + target, "name", "global_probe_symbol"));
+
+        var ex = assertThrows(IllegalArgumentException.class,
+                () -> writeTools.setVariable(json(
+                        "program", programName,
+                        "name_or_address", FN_ADD,
+                        "variable_name", "global_probe_symbol",
+                        "new_name", "whatever")));
+        assertTrue(ex.getMessage().contains("global symbol")
+                        && ex.getMessage().contains("set_global"),
+                "Error must name where the symbol lives and the tool that writes it: " + ex.getMessage());
+    }
+
+    @Test
+    void setVariable_localNameIsNotMistakenForAGlobal() throws Exception {
+        // A function's own variable must still be written even when a global elsewhere in the
+        // program shares its name — the divert above applies only to names the function lacks.
+        Address target = functionAddress(
+                readTools.searchFunctions(programName, "", 200).functions(), FN_COMPUTE);
+        writeTools.createLabel(json(
+                "program", programName, "address", "0x" + target, "name", "shadow_probe_symbol"));
+
+        ReadTools.GetFunctionVariablesResponse before =
+                readTools.getFunctionVariables(programName, FN_ADD);
+        assertFalse(before.variables().isEmpty(), "add() must have a variable to rename");
+        String originalName = before.variables().get(0).name();
+
+        writeTools.setVariable(json(
+                "program", programName,
+                "name_or_address", FN_ADD,
+                "variable_name", originalName,
+                "new_name", "shadow_probe_symbol"));
+
+        // The second write addresses the local by the name it now shares with the label.
+        WriteTools.SetVariableResponse response = writeTools.setVariable(json(
+                "program", programName,
+                "name_or_address", FN_ADD,
+                "variable_name", "shadow_probe_symbol",
+                "new_name", originalName));
+        assertTrue(response.success());
+        assertEquals(originalName, response.name());
     }
 
     @Test
@@ -2770,6 +2941,37 @@ class ToolResourceIntegrationTest {
             }
         }
         return false;
+    }
+
+    /** The start of a writable, non-executable block — somewhere a test may define data. */
+    private Address dataBlockAddress() throws Exception {
+        Program program = programManager.getOrOpen(programName);
+        for (MemoryBlock block : program.getMemory().getBlocks()) {
+            if (block.isWrite() && !block.isExecute() && block.isInitialized()) {
+                return block.getStart();
+            }
+        }
+        throw new IllegalStateException("Fixture has no writable data block");
+    }
+
+    /** An address in a writable data block holding neither a symbol nor defined data. */
+    private Address unnamedDataAddress() throws Exception {
+        Program program = programManager.getOrOpen(programName);
+        for (MemoryBlock block : program.getMemory().getBlocks()) {
+            if (!block.isWrite() || block.isExecute() || !block.isInitialized()) {
+                continue;
+            }
+            for (Address addr = block.getStart(); addr.compareTo(block.getEnd()) <= 0; addr = addr.next()) {
+                Data data = program.getListing().getDataContaining(addr);
+                if (data != null && data.isDefined()) {
+                    continue;
+                }
+                if (program.getSymbolTable().getPrimarySymbol(addr) == null) {
+                    return addr;
+                }
+            }
+        }
+        throw new IllegalStateException("Fixture has no unnamed address in a writable data block");
     }
 
     private static Address functionAddress(Collection<FunctionRef> functions, String name) {

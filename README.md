@@ -158,7 +158,7 @@ Supported field keys, and the tools they gate:
 | `struct_name` | `create_struct` |
 | `struct_field_name` | `add_struct_field`, `replace_struct_field` |
 | `label_name` | `create_label` |
-| `global_name` | `rename_global` |
+| `global_name` | `set_global` |
 
 A key with no entry is unconstrained. An **unknown** key is rejected at startup rather than
 ignored — a typo would otherwise leave a rule looking configured while enforcing nothing.

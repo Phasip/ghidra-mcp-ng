@@ -69,7 +69,7 @@ naming:
       likely_<name> when a library header or debug information makes it unambiguous,
       guess_<name> for quick labels without investigation.
 
-  # label_name (create_label) and global_name (rename_global) are deliberately left
+  # label_name (create_label) and global_name (set_global) are deliberately left
   # unconfigured here, which means unconstrained.
   #
   # The maybe_/likely_/guess_ prefixes mark a name as an inference. Data labels and globals

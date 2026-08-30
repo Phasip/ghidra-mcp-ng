@@ -45,6 +45,31 @@ def _hex(addr: str) -> str:
     return addr if addr.startswith("0x") else "0x" + addr
 
 
+def _referenced_code_address(client: GhidraClient, prog: str) -> str | None:
+    """
+    Return an address inside a function body that something references, or None. A loop
+    back-edge target is the usual one: referenced, but named by no stored symbol, which is
+    exactly when Ghidra synthesises the LAB_ that set_global must refuse to make permanent.
+    """
+    for fn in ("multiply", "register_churn", "register_churn2", "compute", "main"):
+        lines = client.ok(
+            "get_disassembly", {"program": prog, "address": fn, "limit": 100}
+        )["lines"]
+        # Skip the entry point: it carries a real function symbol, not a dynamic label.
+        body = [line["address"] for line in lines if line["function_name"] == fn][1:]
+        if not body:
+            continue
+        batch = client.ok(
+            "batch_tool_call",
+            {"tool": "get_address_info",
+             "calls": [{"program": prog, "address": _hex(a)} for a in body]},
+        )
+        for addr, item in zip(body, batch["results"]):
+            if item["ok"] and item["result"].get("xref_count", 0) > 0:
+                return addr
+    return None
+
+
 _TEMP_NAME_RE = re.compile(r"\b[a-z]{1,4}Var\d+\b")
 
 
@@ -106,7 +131,7 @@ class TestHealth:
             "get_xrefs_to", "get_xrefs_from", "get_function_callees",
             "search_constant_references", "batch_tool_call",
             # WriteTools
-            "rename_function", "set_variable", "rename_global", "create_label",
+            "rename_function", "set_variable", "set_global", "create_label",
             "set_function_prototype", "set_parameter_type",
             "create_struct", "add_struct_field", "remove_struct_field", "replace_struct_field",
             "set_comment", "analyze_program", "import_binary",
@@ -1038,6 +1063,90 @@ class TestWriteOperations:
         assert result["success"] is True
         assert result["parameter_index"] == 0
         assert result["type_name"] == "int"
+
+    def _global_address(self, ghidra_server: GhidraClient, prog: str) -> str:
+        result = ghidra_server.ok("list_globals", {"program": prog, "limit": 200})
+        candidates = [
+            entry for entry in result.get("data", []) + result.get("labels", [])
+            # A null section means an external import: no memory block to put a label in.
+            if entry.get("section")
+        ]
+        assert candidates, "fixture should define at least one memory-backed global"
+        return candidates[0]["address"]
+
+    def test_set_global_reports_the_resulting_name(self, ghidra_server: GhidraClient, prog: str):
+        # Rename a label of our own making, so no symbol another test looks up moves.
+        addr = self._global_address(ghidra_server, prog)
+        ghidra_server.ok(
+            "create_label",
+            {"program": prog, "address": addr, "name": "set_global_probe"},
+        )
+
+        result = ghidra_server.ok(
+            "set_global",
+            {"program": prog,
+             "name_or_address": "set_global_probe",
+             "new_name": "set_global_probe_renamed"},
+        )
+        assert result["success"] is True
+        # 'name' — the name the symbol now has — is what set_variable and create_label report too.
+        assert result["name"] == "set_global_probe_renamed"
+
+    def test_set_global_unknown_symbol_reports_not_found(
+            self, ghidra_server: GhidraClient, prog: str):
+        resp = ghidra_server.call(
+            "set_global",
+            {"program": prog,
+             "name_or_address": "definitely_not_a_global_xyz",
+             "new_name": "whatever"},
+        )
+        assert resp["ok"] is False
+        error = resp.get("error", "")
+        assert "not found" in error.lower()
+        assert "list_globals" in error
+
+    def test_set_global_refuses_a_code_address(self, ghidra_server: GhidraClient, prog: str):
+        # A branch target inside a function has references but no stored symbol, so Ghidra hands
+        # out an automatic LAB_ for it. Naming that would burn a permanent, untyped label into
+        # the middle of a function — the error has to send the agent to create_label instead.
+        addr = _referenced_code_address(ghidra_server, prog)
+        assert addr, "fixture must contain a referenced address inside a function body"
+
+        resp = ghidra_server.call(
+            "set_global",
+            {"program": prog, "name_or_address": _hex(addr), "new_name": "g_code_probe"},
+        )
+        assert resp["ok"] is False
+        error = resp.get("error", "")
+        assert "create_label" in error
+        # And nothing was written: the address still has no global to act on.
+        again = ghidra_server.call(
+            "set_global",
+            {"program": prog, "name_or_address": _hex(addr), "new_name": "g_code_probe"},
+        )
+        assert again["ok"] is False
+
+    def test_set_variable_on_a_global_points_at_set_global(
+            self, ghidra_server: GhidraClient, prog: str):
+        # A global read out of a decompiled body looks like any other name in the function.
+        # The error has to say where it actually lives, not just that the function lacks it.
+        addr = self._global_address(ghidra_server, prog)
+        ghidra_server.ok(
+            "create_label",
+            {"program": prog, "address": addr, "name": "set_variable_global_probe"},
+        )
+
+        resp = ghidra_server.call(
+            "set_variable",
+            {"program": prog,
+             "name_or_address": "add",
+             "variable_name": "set_variable_global_probe",
+             "new_name": "whatever"},
+        )
+        assert resp["ok"] is False
+        error = resp.get("error", "")
+        assert "global symbol" in error
+        assert "set_global" in error
 
     def test_set_comment(self, ghidra_server: GhidraClient, prog: str):
         addr = _func_address(ghidra_server, prog, "add")

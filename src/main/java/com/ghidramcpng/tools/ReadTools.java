@@ -214,12 +214,14 @@ public class ReadTools {
                 break;
             }
 
+            Data definedData = program.getListing().getDataAt(address);
             GlobalSymbolEntry entry = new GlobalSymbolEntry(
                     symbol.getName(),
                     address,
                     symbol.getSymbolType().toString(),
                     blockName,
-                    symbol.getParentNamespace() != null ? symbol.getParentNamespace().getName() : "Global");
+                    symbol.getParentNamespace() != null ? symbol.getParentNamespace().getName() : "Global",
+                    definedData != null ? definedData.getDataType().getName() : null);
 
             if (symbol.getSymbolType() == SymbolType.FUNCTION) {
                 functions.add(entry);
@@ -336,10 +338,10 @@ public class ReadTools {
             "create_struct",
             "remove_struct_field",
             "rename_function",
-            "rename_global",
             "replace_struct_field",
             "set_comment",
             "set_function_prototype",
+            "set_global",
             "set_parameter_type",
             "set_variable",
             "check_connection",
@@ -1640,7 +1642,7 @@ public class ReadTools {
             // Write tools take the request body verbatim, so a batch item is that same body —
             // there is nothing to unpack and no second spelling of any parameter to keep in sync.
             case "rename_function" -> writeTools.renameFunction(args);
-            case "rename_global" -> writeTools.renameGlobal(args);
+            case "set_global" -> writeTools.setGlobal(args);
             case "create_label" -> writeTools.createLabel(args);
             case "set_function_prototype" -> writeTools.setFunctionPrototype(args);
             case "set_parameter_type" -> writeTools.setParameterType(args);
@@ -1715,7 +1717,9 @@ public class ReadTools {
             Address address,
             String symbol_type,
             String section,
-            String namespace) {
+            String namespace,
+            @Schema(description = "Data type currently defined at this address, or null if undefined. Set with set_global.")
+            String type_name) {
         }
 
         public record BatchToolCallRequest(
