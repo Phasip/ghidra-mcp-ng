@@ -252,7 +252,7 @@ public class WriteTools {
             JsonObject request) {
         String programName = required(request, "program");
         String funcRef = required(request, "name_or_address");
-        String returnTypeName = required(request, "return_type");
+        String returnTypeName = required(request, "return_type_name");
         JsonArray paramsJson = optionalArray(request, "parameters");
         String callingConvention = optional(request, "calling_convention", null);
 
@@ -582,16 +582,16 @@ public class WriteTools {
         String programName = required(request, "program");
         String address = required(request, "address");
         String comment = requireMaxLength(required(request, "comment"), "comment", MAX_COMMENT_LENGTH);
-        String type = optional(request, "type", "PRE");
+        String commentTypeName = optional(request, "comment_type", "PRE");
 
-        CommentType commentType = switch (type.toUpperCase()) {
+        CommentType commentType = switch (commentTypeName.toUpperCase()) {
             case "PRE" -> CommentType.PRE;
             case "POST" -> CommentType.POST;
             case "EOL" -> CommentType.EOL;
             case "PLATE" -> CommentType.PLATE;
             case "REPEATABLE" -> CommentType.REPEATABLE;
             default -> throw new IllegalArgumentException(
-                    "Unknown comment type '" + type + "' — must be PRE, POST, EOL, PLATE, or REPEATABLE");
+                    "Unknown comment type '" + commentTypeName + "' — must be PRE, POST, EOL, PLATE, or REPEATABLE");
         };
 
         Program program = openProgram(programName);
@@ -600,7 +600,7 @@ public class WriteTools {
         var addr = toAddress(program, address);
         if (rules.hasCommentRules()) {
             Function containing = program.getFunctionManager().getFunctionContaining(addr);
-            rules.validateComment(type.toUpperCase(), comment,
+            rules.validateComment(commentTypeName.toUpperCase(), comment,
                     containing == null ? null : containing.getName(),
                     () -> countAutoNamedVariables(containing));
         }
@@ -614,7 +614,7 @@ public class WriteTools {
             cu.setComment(commentType, comment.isEmpty() ? null : comment);
         });
 
-        return new SetCommentResponse(true, address, type.toUpperCase());
+        return new SetCommentResponse(true, address, commentTypeName.toUpperCase());
     }
 
     /**
@@ -1156,8 +1156,8 @@ public class WriteTools {
             String program,
             @Schema(description = "Function name or hex address", requiredMode = Schema.RequiredMode.REQUIRED)
             String name_or_address,
-            @Schema(description = "Return type name", requiredMode = Schema.RequiredMode.REQUIRED)
-            String return_type,
+            @Schema(description = "Data type to return, e.g. int, char *, MyStruct *", requiredMode = Schema.RequiredMode.REQUIRED)
+            String return_type_name,
             @Schema(description = "Ordered parameter list; each entry is {name, type_name}. Replaces the function's existing parameters — omit or pass an empty array for a no-argument function.")
             List<PrototypeParameterRequest> parameters,
             @Schema(description = "Calling convention name (e.g. __cdecl, __stdcall, __fastcall, __thiscall). Use get_calling_conventions to see valid values for this program.")
@@ -1242,7 +1242,7 @@ public class WriteTools {
             @Schema(description = "Comment text (max 4096 chars)", requiredMode = Schema.RequiredMode.REQUIRED)
             String comment,
             @Schema(description = "Comment type: PRE, POST, EOL, PLATE, or REPEATABLE")
-            String type) {
+            String comment_type) {
     }
 
     public record RenameFunctionResponse(boolean success, String new_name) {
@@ -1277,7 +1277,7 @@ public class WriteTools {
     }
 
     public record SetFunctionPrototypeResponse(boolean success, String function,
-            String return_type, int parameter_count) {
+            String return_type_name, int parameter_count) {
     }
 
     public record SetParameterTypeResponse(boolean success, int parameter_index,
@@ -1299,7 +1299,7 @@ public class WriteTools {
             String field_name, int ordinal, String type_name) {
     }
 
-    public record SetCommentResponse(boolean success, String address, String type) {
+    public record SetCommentResponse(boolean success, String address, String comment_type) {
     }
 
     public record ImportBinaryRequest(

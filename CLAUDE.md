@@ -211,7 +211,10 @@ JSON keys). Add `@Schema(description=...)` for docs. `Address` fields serialize 
    shared concept — `program`, `name_or_address`, `limit`, `truncated`, `count`, `start_address`
    /`end_address`, `ref_types` — rather than inventing a synonym. New response records should
    mirror the field naming of the closest existing record. A divergent name is a bug even if it
-   works.
+   works. Two rules cover the word *type*, which otherwise attracts synonyms: a field holding a
+   **Ghidra data type name** is `type_name` on both the read and the write side (`return_type_name`
+   where the slot needs naming); a field holding a **kind** is `<thing>_type`
+   (`symbol_type`, `ref_type`, `comment_type`). Never a bare `type`, and never `data_type`.
 9. **Prefer extending over adding (minimal-surface principle).** Before writing a new
    `@GET`/`@POST` method, check whether an optional parameter or a richer response on an
    existing tool covers the need. Only add a tool for a genuinely distinct capability.

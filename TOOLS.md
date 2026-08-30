@@ -43,7 +43,7 @@ Set a comment on a code unit at the specified address.
 | `program` | string | yes |  | Program name; see list_project_files. |
 | `address` | string | yes |  | 0x-prefixed hex address. |
 | `comment` | string | yes |  | Comment text (max 4096 chars) |
-| `type` | string |  |  | Comment type: PRE, POST, EOL, PLATE, or REPEATABLE |
+| `comment_type` | string |  |  | Comment type: PRE, POST, EOL, PLATE, or REPEATABLE |
 
 ### `set_function_prototype`
 
@@ -53,7 +53,7 @@ Set a function's return type, calling convention, and parameter list.
 |-----------|------|:--------:|---------|-------------|
 | `program` | string | yes |  | Program name; see list_project_files. |
 | `name_or_address` | string | yes |  | Function name or hex address |
-| `return_type` | string | yes |  | Return type name |
+| `return_type_name` | string | yes |  | Data type to return, e.g. int, char *, MyStruct * |
 | `parameters` | array of object {name, type_name} |  |  | Ordered parameter list; each entry is {name, type_name}. Replaces the function's existing parameters — omit or pass an empty array for a no-argument function. |
 | `calling_convention` | string |  |  | Calling convention name (e.g. __cdecl, __stdcall, __fastcall, __thiscall). Use get_calling_conventions to see valid values for this program. |
 

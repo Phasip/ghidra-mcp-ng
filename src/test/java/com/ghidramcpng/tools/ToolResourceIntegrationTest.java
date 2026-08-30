@@ -311,7 +311,7 @@ class ToolResourceIntegrationTest {
                         "program", programName,
                         "address", addAddress.toString(),
                         "comment", "test",
-                        "type", "PRE")));
+                        "comment_type", "PRE")));
     }
 
     // -----------------------------------------------------------------------------------
@@ -341,7 +341,7 @@ class ToolResourceIntegrationTest {
                         "program", programName,
                         "address", "0x" + addAddress,
                         "comment", "x".repeat(21),
-                        "type", "PLATE")));
+                        "comment_type", "PLATE")));
         assertTrue(violation.getMessage().contains("20"),
                 "Message must state the limit: " + violation.getMessage());
 
@@ -354,7 +354,7 @@ class ToolResourceIntegrationTest {
                 "program", programName,
                 "address", "0x" + addAddress,
                 "comment", "short enough",
-                "type", "PLATE")));
+                "comment_type", "PLATE")));
     }
 
     @Test
@@ -374,7 +374,7 @@ class ToolResourceIntegrationTest {
                             "program", programName,
                             "address", "0x" + addAddress,
                             "comment", "what this function does",
-                            "type", "PLATE")));
+                            "comment_type", "PLATE")));
             assertTrue(violation.getMessage().contains(autoName), violation.getMessage());
             assertTrue(violation.getMessage().contains("rename_function"),
                     "Message must name the next call: " + violation.getMessage());
@@ -384,7 +384,7 @@ class ToolResourceIntegrationTest {
                     "program", programName,
                     "address", "0x" + addAddress,
                     "comment", "still allowed",
-                    "type", "EOL")));
+                    "comment_type", "EOL")));
         } finally {
             writeTools.renameFunction(json(
                     "program", programName, "name_or_address", autoName, "new_name", FN_ADD));
@@ -394,7 +394,7 @@ class ToolResourceIntegrationTest {
                 "program", programName,
                 "address", "0x" + addAddress,
                 "comment", "allowed now that it has a real name",
-                "type", "PLATE")));
+                "comment_type", "PLATE")));
     }
 
     @Test
@@ -420,7 +420,7 @@ class ToolResourceIntegrationTest {
                 "program", programName,
                 "address", "0x" + computeAddress,
                 "comment", "at the limit",
-                "type", "PLATE")));
+                "comment_type", "PLATE")));
 
         // If the analyzer ever stops recovering auto-named locals for this fixture the reject
         // case below becomes untestable. Skip loudly rather than passing on the pass case alone.
@@ -433,7 +433,7 @@ class ToolResourceIntegrationTest {
                         "program", programName,
                         "address", "0x" + computeAddress,
                         "comment", "one over the limit",
-                        "type", "PLATE")));
+                        "comment_type", "PLATE")));
         assertTrue(violation.getMessage().contains("get_function_variables"),
                 "Message must point at the tool that lists them: " + violation.getMessage());
     }
@@ -446,7 +446,7 @@ class ToolResourceIntegrationTest {
                 "program", programName,
                 "address", "0x" + addAddress,
                 "comment", "x".repeat(2000),
-                "type", "PLATE")));
+                "comment_type", "PLATE")));
     }
 
     // -----------------------------------------------------------------------------------
@@ -920,7 +920,7 @@ class ToolResourceIntegrationTest {
         WriteTools.SetFunctionPrototypeResponse response = writeTools.setFunctionPrototype(json(
                 "program", programName,
                 "name_or_address", FN_COMPUTE,
-                "return_type", "int",
+                "return_type_name", "int",
                 "parameters", parameterArray(
                         parameter("x", "int"),
                         parameter("y", "int"),
@@ -940,7 +940,7 @@ class ToolResourceIntegrationTest {
                 () -> writeTools.setFunctionPrototype(json(
                         "program", programName,
                         "name_or_address", FN_COMPUTE,
-                        "return_type", "int",
+                        "return_type_name", "int",
                         "parameters", parameterArray(json("name", "x")))));
         assertTrue(missingType.getMessage().contains("parameters[0].type_name"));
 
@@ -951,7 +951,7 @@ class ToolResourceIntegrationTest {
                 () -> writeTools.setFunctionPrototype(json(
                         "program", programName,
                         "name_or_address", FN_COMPUTE,
-                        "return_type", "int",
+                        "return_type_name", "int",
                         "parameters", parameterArray(json("name", "x", "type", "int")))));
         assertTrue(oldSpelling.getMessage().contains("'type'"),
                 "message must name the key that was actually supplied: " + oldSpelling.getMessage());
@@ -964,7 +964,7 @@ class ToolResourceIntegrationTest {
                 () -> writeTools.setFunctionPrototype(json(
                         "program", programName,
                         "name_or_address", FN_COMPUTE,
-                        "return_type", "int",
+                        "return_type_name", "int",
                         "parameters", parameterArray(json("name", "   ", "type_name", "int")))));
         assertTrue(blankName.getMessage().contains("parameters[0].name"));
     }
@@ -975,7 +975,7 @@ class ToolResourceIntegrationTest {
         writeTools.setFunctionPrototype(json(
                 "program", programName,
                 "name_or_address", FN_COMPUTE,
-                "return_type", "int",
+                "return_type_name", "int",
                 "parameters", parameterArray(
                         parameter("x", "int"),
                         parameter("y", "int"),
@@ -1011,7 +1011,7 @@ class ToolResourceIntegrationTest {
         writeTools.setFunctionPrototype(json(
                 "program", programName,
                 "name_or_address", FN_COMPUTE,
-                "return_type", "int",
+                "return_type_name", "int",
                 "parameters", parameterArray(
                         parameter("x", "int"),
                         parameter("y", "int"),
@@ -1214,7 +1214,7 @@ class ToolResourceIntegrationTest {
                 readTools.getStructLayout(programName, "ReplaceFieldTestStruct");
         StructField replaced = requireStructField(layout.fields(), "replaced_field");
         assertEquals(0, replaced.offset());
-        assertEquals("byte", replaced.type());
+        assertEquals("byte", replaced.type_name());
 
         // validation: missing field_name must be rejected
         IllegalArgumentException missing = assertThrows(
@@ -1409,7 +1409,7 @@ class ToolResourceIntegrationTest {
                 "program", programName,
                 "address", withHexPrefix(addAddress),
                 "comment", commentText,
-                "type", "PRE"));
+                "comment_type", "PRE"));
         assertTrue(response.success());
 
         Program program = programManager.getOrOpen(programName);
@@ -1429,9 +1429,9 @@ class ToolResourceIntegrationTest {
                     "program", programName,
                     "address", withHexPrefix(addAddress),
                     "comment", "Comment type test: " + type,
-                    "type", type));
+                    "comment_type", type));
             assertTrue(response.success(), "setComment must succeed for type: " + type);
-            assertEquals(type, response.type(), "Response type must match requested type: " + type);
+            assertEquals(type, response.comment_type(), "Response type must match requested type: " + type);
         }
     }
 
@@ -1446,7 +1446,7 @@ class ToolResourceIntegrationTest {
                         "program", programName,
                         "address", withHexPrefix(addAddress),
                         "comment", "test",
-                        "type", "UNKNOWN_TYPE")));
+                        "comment_type", "UNKNOWN_TYPE")));
         assertTrue(ex.getMessage().contains("UNKNOWN_TYPE"),
                 "Error must mention the unknown type: " + ex.getMessage());
     }
@@ -1614,7 +1614,7 @@ class ToolResourceIntegrationTest {
         writeTools.setFunctionPrototype(json(
                 "program", programName,
                 "name_or_address", FN_COMPUTE,
-                "return_type", "int",
+                "return_type_name", "int",
                 "parameters", parameterArray(
                         parameter("persist_x", "int"),
                         parameter("persist_y", "int"))));
@@ -1634,7 +1634,7 @@ class ToolResourceIntegrationTest {
         writeTools.setFunctionPrototype(json(
                 "program", programName,
                 "name_or_address", FN_COMPUTE,
-                "return_type", "int",
+                "return_type_name", "int",
                 "parameters", parameterArray(
                         parameter("a", "int"),
                         parameter("b", "int"),
@@ -1750,7 +1750,7 @@ class ToolResourceIntegrationTest {
         ReadTools.GetStructLayoutResponse layout =
                 readTools.getStructLayout(programName, "ReplacePersistStruct");
         StructField replaced = requireStructField(layout.fields(), "replaced_persist_field");
-        assertEquals("byte", replaced.type(),
+        assertEquals("byte", replaced.type_name(),
                 "Replaced struct field type must survive program close-and-reopen");
     }
 
@@ -1764,7 +1764,7 @@ class ToolResourceIntegrationTest {
                 "program", programName,
                 "address", withHexPrefix(addAddress),
                 "comment", commentText,
-                "type", "PRE"));
+                "comment_type", "PRE"));
 
         reopenManager();
 
@@ -2460,7 +2460,7 @@ class ToolResourceIntegrationTest {
         WriteTools.SetFunctionPrototypeResponse response = writeTools.setFunctionPrototype(json(
                 "program", programName,
                 "name_or_address", FN_ADD,
-                "return_type", typeName,
+                "return_type_name", typeName,
                 "parameters", new JsonArray()));
         assertTrue(response.success(),
                 "setFunctionPrototype must accept built-in return type '" + typeName + "'");
@@ -2581,7 +2581,7 @@ class ToolResourceIntegrationTest {
         assertDoesNotThrow(() -> writeTools.setFunctionPrototype(json(
                 "program", programName,
                 "name_or_address", FN_MULTIPLY,
-                "return_type", "int32_t",
+                "return_type_name", "int32_t",
                 "parameters", parameterArray(
                         parameter("a", "uint32_t"),
                         parameter("b", "uint8_t")))));

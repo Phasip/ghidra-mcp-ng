@@ -11,7 +11,7 @@ public record StringEntry(
         @Schema(description = "String content.")
         String value,
         @Schema(description = "Ghidra data type name, e.g. string, unicode, TerminatedCString.")
-        String type) {
+        String type_name) {
 
     public static StringEntry from(Data d) {
         return new StringEntry(

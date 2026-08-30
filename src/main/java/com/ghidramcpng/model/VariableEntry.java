@@ -11,7 +11,7 @@ public record VariableEntry(
         @Schema(description = "Variable name as seen in the decompiler.")
         String name,
         @Schema(description = "Ghidra data type name, e.g. int, char *, LPVOID.")
-        String type,
+        String type_name,
         @Schema(description = "Ghidra storage descriptor: register name, stack offset (Stack[0x10]), or memory address.")
         String storage,
         @Schema(description = "Variable kind: 'parameter', 'local', or 'temporary'.")

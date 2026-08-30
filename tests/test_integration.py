@@ -766,7 +766,7 @@ class TestWriteOperations:
         )["variables"]
         assert variables, "add() should have variables"
         target = variables[0]
-        original_type = target["type"]
+        original_type = target["type_name"]
 
         result = ghidra_server.ok(
             "set_variable",
@@ -780,7 +780,7 @@ class TestWriteOperations:
         assert result["type_name"] == "uint"
 
         current = {
-            v["name"]: v["type"] for v in ghidra_server.ok(
+            v["name"]: v["type_name"] for v in ghidra_server.ok(
                 "get_function_variables",
                 {"program": prog, "name_or_address": "add"},
             )["variables"]
@@ -976,7 +976,7 @@ class TestWriteOperations:
             "set_function_prototype",
             {"program": prog,
              "name_or_address": "compute",
-             "return_type": "int",
+             "return_type_name": "int",
              "parameters": [
                  {"name": "x", "type_name": "int"},
                  {"name": "y", "type_name": "int"},
@@ -992,7 +992,7 @@ class TestWriteOperations:
             "set_function_prototype",
             {"program": prog,
              "name_or_address": "compute",
-             "return_type": "int",
+             "return_type_name": "int",
              "parameters": [{"name": "x"}]},
         )
         assert missing_type["ok"] is False
@@ -1002,7 +1002,7 @@ class TestWriteOperations:
             "set_function_prototype",
             {"program": prog,
              "name_or_address": "compute",
-             "return_type": "int",
+             "return_type_name": "int",
              "parameters": [{"name": "   ", "type_name": "int"}]},
         )
         assert blank_name["ok"] is False
@@ -1016,7 +1016,7 @@ class TestWriteOperations:
             "set_function_prototype",
             {"program": prog,
              "name_or_address": "compute",
-             "return_type": "int",
+             "return_type_name": "int",
              "parameters": [{"name": "x", "type": "int"}]},
         )
         assert resp["ok"] is False
@@ -1048,7 +1048,7 @@ class TestWriteOperations:
             {"program": prog,
              "address": _hex(addr),
              "comment": comment_text,
-             "type": "PRE"},
+             "comment_type": "PRE"},
         )
         assert result["success"] is True
 
@@ -1058,7 +1058,7 @@ class TestWriteOperations:
             {"program": prog,
              "address": _hex(addr),
              "comment": "PLACEHOLDER",
-             "type": "PRE"},
+             "comment_type": "PRE"},
         )
 
     def test_set_comment_requires_0x_prefix(self, ghidra_server: GhidraClient, prog: str):
@@ -1069,7 +1069,7 @@ class TestWriteOperations:
             {"program": prog,
              "address": bare,
              "comment": "test",
-             "type": "PRE"},
+             "comment_type": "PRE"},
         )
         assert err["ok"] is False
         assert "missing the 0x prefix" in err.get("error", "").lower()
@@ -1163,9 +1163,9 @@ class TestBatchedWrites:
                 "tool": "set_comment",
                 "calls": [
                     {"program": prog, "address": _hex(addr),
-                     "comment": "batch comment", "type": "PRE"},
+                     "comment": "batch comment", "comment_type": "PRE"},
                     {"program": prog, "address": _hex(addr),
-                     "comment": "batch eol", "type": "EOL"},
+                     "comment": "batch eol", "comment_type": "EOL"},
                 ],
             },
         )
@@ -1275,7 +1275,7 @@ class TestStructs:
         )
         fields = {field["name"]: field for field in layout.get("fields", [])}
         assert fields["tail_byte"]["offset"] == 4
-        assert fields["tail_byte"]["type"] == "byte"
+        assert fields["tail_byte"]["type_name"] == "byte"
 
     def test_struct_field_mutations_require_field_name(
             self, ghidra_server: GhidraClient, prog: str):
@@ -1709,7 +1709,7 @@ class TestArgumentTypeStrictness:
         resp = ghidra_server.call(
             "set_function_prototype",
             {"program": prog, "name_or_address": "main",
-             "return_type": "int", "parameters": "int argc"},
+             "return_type_name": "int", "parameters": "int argc"},
         )
         assert resp["ok"] is False
         assert "parameters" in resp["error"] and "array" in resp["error"]
@@ -1741,12 +1741,12 @@ class TestUnknownFieldRejection:
         resp = ghidra_server.call(
             "set_comment",
             {"program": prog, "address": address,
-             "comment": "plate please", "comment_type": "PLATE"},
+             "comment": "plate please", "comment_kind": "PLATE"},
         )
         assert resp["ok"] is False
-        assert "comment_type" in resp["error"]
+        assert "comment_kind" in resp["error"]
         assert "set_comment" in resp["error"]
-        assert "type" in resp["error"], "must name the field that was meant among the valid set"
+        assert "comment_type" in resp["error"], "must name the field that was meant among the valid set"
 
         # And nothing was written under the default type.
         info = ghidra_server.ok("get_address_info", {"program": prog, "address": address})

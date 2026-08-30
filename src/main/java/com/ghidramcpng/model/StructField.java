@@ -15,7 +15,7 @@ public record StructField(
         @Schema(description = "Field name ('(unnamed)' if the field has no name).")
         String name,
         @Schema(description = "Data type name of the field.")
-        String type,
+        String type_name,
         @Schema(description = "Category path of the field's data type.")
         String type_path,
         @Schema(description = "Field comment, if any.")
