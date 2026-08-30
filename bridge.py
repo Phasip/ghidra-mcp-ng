@@ -302,10 +302,8 @@ def _do_list_tools(ops: dict[str, dict], arguments: dict) -> Any:
     if category is None:
         return {"categories": grouped}
     if category not in grouped:
-        close = difflib.get_close_matches(category, list(grouped), n=1, cutoff=0.5)
-        hint = f"Did you mean '{close[0]}'?" if close else \
-            "Valid categories: " + ", ".join(grouped) + "."
-        raise ValueError(f"Unknown category: '{category}'. {hint}")
+        raise ValueError(
+            f"Unknown category: '{category}'. Valid categories: " + ", ".join(grouped) + ".")
     return {
         "category": category,
         "tools": [

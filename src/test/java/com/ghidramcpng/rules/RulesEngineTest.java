@@ -472,8 +472,8 @@ class RulesEngineTest {
     }
 
     @Test
-    @DisplayName("An unknown naming key is rejected and the closest valid key is suggested")
-    void unknownNamingKey_rejectedWithSuggestion() throws IOException {
+    @DisplayName("An unknown naming key is rejected and every valid key is listed")
+    void unknownNamingKey_rejectedWithTheValidKeys() throws IOException {
         String yaml = "naming:\n" +
                       "  lable_name:\n" +
                       "    pattern: \"^lbl_.*$\"\n";
@@ -481,8 +481,8 @@ class RulesEngineTest {
                 () -> fromYaml(yaml));
         assertTrue(ex.getMessage().contains("lable_name"),
                 "Error must name the offending key. Got: " + ex.getMessage());
-        assertTrue(ex.getMessage().contains("label_name"),
-                "Error must suggest the intended key. Got: " + ex.getMessage());
+        assertTrue(ex.getMessage().contains("label_name") && ex.getMessage().contains("variable_name"),
+                "Error must list the keys that exist. Got: " + ex.getMessage());
     }
 
     @Test

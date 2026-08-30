@@ -1362,10 +1362,8 @@ public class ReadTools {
                     continue;
                 }
                 if (!KNOWN_REF_TYPES.contains(trimmed)) {
-                    String suggestion = ApiSupport.suggestClosest(trimmed, KNOWN_REF_TYPES);
                     throw new IllegalArgumentException(
                             "Unknown reference type '" + token.trim() + "' in 'ref_types'. " +
-                            (suggestion != null ? "Did you mean '" + suggestion + "'? " : "") +
                             "Use one of the categories " + String.join(", ", REF_TYPE_CATEGORIES) +
                             ", or an exact Ghidra reference type name such as UNCONDITIONAL_CALL.");
                 }

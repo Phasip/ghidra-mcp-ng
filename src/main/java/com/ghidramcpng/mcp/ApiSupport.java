@@ -47,8 +47,9 @@ public final class ApiSupport {
 
     /**
      * Returns the candidate closest to {@code provided}, or null if none is close enough to be
-     * worth suggesting. Shared by every "did you mean" message so a near-miss reads the same
-     * way whether it is a query parameter, a tool name, or anything else.
+     * worth suggesting. Shared by every "did you mean" message so a near-miss reads the same way.
+     * Only for vocabularies too large to list — a tool name, a data type name, a language id.
+     * When the valid set fits in the message, list it instead of guessing.
      */
     public static String suggestClosest(String provided, Collection<String> candidates) {
         String best = null;
@@ -72,8 +73,9 @@ public final class ApiSupport {
     /**
      * Builds the rejection for names that are not part of an input's vocabulary — an undeclared
      * query parameter, an unrecognised request-body field, an unknown struct-parameter key.
-     * Shared so a misspelled name reads the same wherever it arrives, and so every such rejection
-     * carries both the valid set and a "did you mean" for the first offender.
+     * Shared so a misspelled name reads the same wherever it arrives. The vocabulary is small and
+     * fixed, so the rejection lists all of it rather than guessing which one was meant — the whole
+     * list is the answer, and a wrong guess is worse than no guess.
      *
      * @param noun  singular name for what was rejected, e.g. "query parameter" or "field"
      * @param scope where it was sent, e.g. "endpoint 'GET /tool/get_function_info'"
@@ -88,13 +90,8 @@ public final class ApiSupport {
             return message.append("This ").append(scope).append(" takes no ").append(noun)
                     .append("s.").toString();
         }
-        message.append("Valid ").append(noun).append("s: ").append(String.join(", ", allowed)).append(".");
-        String suggestion = suggestClosest(unknown.get(0), allowed);
-        if (suggestion != null) {
-            message.append(" Did you mean '").append(suggestion)
-                    .append("' (for '").append(unknown.get(0)).append("')?");
-        }
-        return message.toString();
+        return message.append("Valid ").append(noun).append("s: ")
+                .append(String.join(", ", allowed)).append(".").toString();
     }
 
     private static String quoteJoin(List<String> values) {

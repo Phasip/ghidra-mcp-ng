@@ -179,9 +179,14 @@ JSON keys). Add `@Schema(description=...)` for docs. `Address` fields serialize 
 
 1. **Error messages are the product.** Diagnose the *actual* failure and stop there — do
    not enumerate every possibility. Name the offending value, say why it failed, and point
-   to the exact tool/next step. Prefer a "did you mean" suggestion over dumping a catalogue.
+   to the exact tool/next step. **Show the shape that works; do not reconstruct the exact call
+   the caller meant.** A fixed vocabulary (query parameter names, calling conventions,
+   `rules.yaml` keys, categories) is *listed in full* — the whole list is the answer, and it is
+   shorter and truer than a guess. A "did you mean" is for vocabularies too large to list —
+   a data type name, a function's variable names, a tool name, a language id — and never
+   alongside a list of the valid values.
    Reference implementations of this standard:
-   - `UnknownQueryParamFilter` — rejects unknown query params, suggests the closest valid one.
+   - `ApiSupport.unknownNamesMessage` — an unknown query param/field is answered with all the valid ones.
    - `ToolHelpers.findFunction` — a mid-function address names the containing function and its entry point.
    - `ToolHelpers.findDataType` — an unknown type suggests near matches, never lists all types.
    - `WriteTools.findVariable` — distinguishes a decompiler temporary from a truly missing name.

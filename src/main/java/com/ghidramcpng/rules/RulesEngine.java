@@ -116,10 +116,6 @@ public class RulesEngine {
                     .append("Unknown key '").append(key).append("' under '").append(section)
                     .append(":' in rules file '").append(file).append("'. ")
                     .append("Valid keys: ").append(String.join(", ", known)).append(".");
-            String suggestion = com.ghidramcpng.mcp.ApiSupport.suggestClosest(key, known);
-            if (suggestion != null) {
-                message.append(" Did you mean '").append(suggestion).append("'?");
-            }
             throw new IllegalArgumentException(message.toString());
         }
     }

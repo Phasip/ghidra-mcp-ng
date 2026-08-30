@@ -1906,7 +1906,9 @@ class TestRefTypeVocabulary:
             "get_xrefs_to", {"program": prog, "name_or_address": "main", "ref_types": "CALLS"})
         assert resp["ok"] is False
         assert "CALLS" in resp["error"]
-        assert "'CALL'" in resp["error"], "must suggest the real type"
+        # The vocabulary is short, so the error states it instead of guessing at one name.
+        assert "CALL, COMPUTED_CALL, DATA, READ, WRITE, OTHER" in resp["error"]
+        assert "Did you mean" not in resp["error"]
 
     def test_one_bad_type_among_good_ones_is_rejected(
             self, ghidra_server: GhidraClient, prog: str):
