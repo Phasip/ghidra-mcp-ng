@@ -138,9 +138,27 @@ def _prop_schema(spec: dict, s: dict) -> dict:
         entry["default"] = s["default"]
     if "enum" in s:
         entry["enum"] = s["enum"]
+    if t == "object" and s.get("properties"):
+        # A record used as a nested field — carry its fields through. Dropping them leaves the
+        # agent an untyped 'object' and forces the parent's description to spell the shape out
+        # in prose, which is the workaround, not the fix.
+        entry["properties"] = {
+            name: _prop_schema(spec, _resolve(spec, raw))
+            for name, raw in s["properties"].items()
+        }
+        if s.get("required"):
+            entry["required"] = list(s["required"])
     if t == "array":
         raw_items = s.get("items", {})
-        entry["items"] = _prop_schema(spec, _resolve(spec, raw_items)) if raw_items else {"type": "string"}
+        if not raw_items:
+            entry["items"] = {"type": "string"}
+        else:
+            item = _prop_schema(spec, _resolve(spec, raw_items))
+            # Swagger folds a field's own @Schema(description) into the component it references,
+            # so the item would otherwise repeat the array's description word for word.
+            if item.get("description") == entry.get("description"):
+                item.pop("description", None)
+            entry["items"] = item
     return entry
 
 
@@ -169,7 +187,9 @@ def _input_schema(spec: dict, op: dict, method: str) -> dict:
             props[name] = _prop_schema(spec, _resolve(spec, raw_s))
         required = schema.get("required", [])
 
-    result: dict[str, Any] = {"type": "object", "properties": props}
+    # The server rejects any parameter or field it does not declare, so say so in the schema and
+    # let a strict client catch the typo without spending a round trip on it.
+    result: dict[str, Any] = {"type": "object", "properties": props, "additionalProperties": False}
     if required:
         result["required"] = required
     return result
@@ -238,6 +258,7 @@ def _meta_tools(ops: dict[str, dict]) -> list[dict]:
                         "enum": category_names,
                     },
                 },
+                "additionalProperties": False,
             },
         },
         {
@@ -255,6 +276,7 @@ def _meta_tools(ops: dict[str, dict]) -> list[dict]:
                     },
                 },
                 "required": ["tool_name"],
+                "additionalProperties": False,
             },
         },
         {
@@ -276,6 +298,7 @@ def _meta_tools(ops: dict[str, dict]) -> list[dict]:
                     },
                 },
                 "required": ["tool_name"],
+                "additionalProperties": False,
             },
         },
     ]

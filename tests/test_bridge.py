@@ -195,7 +195,12 @@ class TestInputSchema:
     def test_empty_post_body_returns_empty_schema(self):
         op: dict = {}
         schema = bridge._input_schema(_MINIMAL_SPEC, op, "post")
-        assert schema == {"type": "object", "properties": {}}
+        assert schema == {"type": "object", "properties": {}, "additionalProperties": False}
+
+    def test_schema_refuses_undeclared_arguments(self):
+        # the server rejects them, so the schema says so and a strict client never sends one
+        op = _MINIMAL_SPEC["paths"]["/search_functions"]["get"]
+        assert bridge._input_schema(_MINIMAL_SPEC, op, "get")["additionalProperties"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -729,3 +734,65 @@ class TestMainLoopMiscMethods:
 
         assert len(captured) == 1
         assert json.loads(captured[0])["result"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Nested request schemas
+# ---------------------------------------------------------------------------
+
+class TestNestedSchema:
+    _SPEC = {
+        "paths": {
+            "/set_function_prototype": {
+                "post": {
+                    "operationId": "set_function_prototype",
+                    "tags": ["Annotation"],
+                    "summary": "Set a prototype",
+                    "requestBody": {"content": {"application/json": {
+                        "schema": {"$ref": "#/components/schemas/PrototypeRequest"}}}},
+                }
+            }
+        },
+        "components": {"schemas": {
+            "PrototypeRequest": {
+                "type": "object",
+                "properties": {
+                    "parameters": {
+                        "type": "array",
+                        "description": "Ordered parameter list.",
+                        "items": {"$ref": "#/components/schemas/PrototypeParameter"},
+                    },
+                },
+            },
+            "PrototypeParameter": {
+                "type": "object",
+                "description": "Ordered parameter list.",
+                "properties": {
+                    "name": {"type": "string", "description": "Parameter name"},
+                    "type_name": {"type": "string", "description": "Data type"},
+                },
+                "required": ["name", "type_name"],
+            },
+        }},
+    }
+
+    def _parameters(self) -> dict:
+        op = self._SPEC["paths"]["/set_function_prototype"]["post"]
+        return bridge._input_schema(self._SPEC, op, "post")["properties"]["parameters"]
+
+    def test_an_items_record_keeps_its_fields(self):
+        items = self._parameters()["items"]
+        assert set(items["properties"]) == {"name", "type_name"}
+        assert items["properties"]["name"]["description"] == "Parameter name"
+
+    def test_an_items_record_keeps_its_required_fields(self):
+        assert self._parameters()["items"]["required"] == ["name", "type_name"]
+
+    def test_the_item_does_not_repeat_the_arrays_description(self):
+        # swagger folds the field's @Schema(description) into the component it references
+        assert "description" not in self._parameters()["items"]
+
+    def test_an_untyped_object_stays_untyped(self):
+        # batch_tool_call's 'calls' really is free-form; nothing to recurse into
+        entry = bridge._prop_schema({}, {"type": "array", "items": {"type": "object"}})
+        assert entry["items"] == {"type": "object"}
