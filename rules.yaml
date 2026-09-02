@@ -15,8 +15,9 @@
 # Edit this file and restart the server to apply changes.
 
 timeouts:
-  # Maximum time for one decompilation attempt used by decompile_function,
-  # batch_decompile, and analyze_function_complete.
+  # Maximum time for one decompilation attempt, wherever a tool decompiles —
+  # decompile_function, and the lookups that decompile to answer a question.
+  # decompile_function's own timeout_seconds overrides this per call.
   decompile_seconds: 60
 
 import:
