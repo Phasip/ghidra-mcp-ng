@@ -198,7 +198,7 @@ public class ScriptTool {
             // Record where the copy came from so run_script can pick up later edits rather
             // than reporting success while running this snapshot forever.
             Files.writeString(sourceSidecar(target), source.toString());
-            return new AddScriptResponse(true, filename, source.toString());
+            return new AddScriptResponse(filename, source.toString());
         });
     }
 
@@ -264,7 +264,7 @@ public class ScriptTool {
                 throw new IllegalStateException("Failed to delete script: " + filename);
             }
             Files.deleteIfExists(sourceSidecar(scriptPath));
-            return new DeleteScriptResponse(true, filename);
+            return new DeleteScriptResponse(filename);
         });
     }
 
@@ -334,7 +334,7 @@ public class ScriptTool {
             script.execute(state, TaskMonitor.DUMMY, printWriter);
             printWriter.flush();
 
-            return new RunScriptResponse(true, scriptPath.getFileName().toString(),
+            return new RunScriptResponse(scriptPath.getFileName().toString(),
                     stringWriter.toString(), program.getName(),
                     source.path(), source.state());
         });
@@ -540,7 +540,6 @@ public class ScriptTool {
     }
 
     public record AddScriptResponse(
-            boolean success,
             String filename,
             @Schema(description = "Absolute path of the source file now registered for this filename. run_script re-copies from here whenever it has changed.")
             String source_path) {
@@ -556,7 +555,6 @@ public class ScriptTool {
     }
 
     public record RunScriptResponse(
-            boolean success,
             String filename,
             String output,
             String program,
@@ -575,6 +573,6 @@ public class ScriptTool {
             String filename) {
     }
 
-    public record DeleteScriptResponse(boolean success, String filename) {
+    public record DeleteScriptResponse(String filename) {
     }
 }

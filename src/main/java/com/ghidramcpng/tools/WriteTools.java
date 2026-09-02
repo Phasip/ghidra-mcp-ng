@@ -113,7 +113,7 @@ public class WriteTools {
             }
         });
 
-        return recorded(new RenameFunctionResponse(true, newName));
+        return recorded(new RenameFunctionResponse(newName));
     }
 
     @POST
@@ -203,7 +203,7 @@ public class WriteTools {
             }
         });
 
-        return recorded(new SetVariableResponse(true,
+        return recorded(new SetVariableResponse(
                 newName != null ? newName : variableName,
                 found.getDataType() != null ? found.getDataType().getName() : null,
                 found instanceof Parameter ? "parameter" : "local", null));
@@ -274,7 +274,7 @@ public class WriteTools {
         });
 
         Data data = program.getListing().getDataAt(address);
-        return recorded(new SetGlobalResponse(true,
+        return recorded(new SetGlobalResponse(
                 newName != null ? newName : target.getName(),
                 data != null ? data.getDataType().getName() : null));
     }
@@ -306,7 +306,7 @@ public class WriteTools {
             }
         });
 
-        return recorded(new CreateLabelResponse(true, name, address));
+        return recorded(new CreateLabelResponse(name, address));
     }
 
     @POST
@@ -354,7 +354,7 @@ public class WriteTools {
                     SourceType.USER_DEFINED);
         });
 
-        return recorded(new SetFunctionPrototypeResponse(true, funcRef, returnTypeName, params.size()));
+        return recorded(new SetFunctionPrototypeResponse(funcRef, returnTypeName, params.size()));
     }
 
     @POST
@@ -415,7 +415,7 @@ public class WriteTools {
             }
         });
 
-        return recorded(new SetParameterTypeResponse(true, parameterIndex, typeName, newName));
+        return recorded(new SetParameterTypeResponse(parameterIndex, typeName, newName));
     }
 
     @POST
@@ -472,7 +472,7 @@ public class WriteTools {
                     DataTypeConflictHandler.REPLACE_HANDLER);
         });
 
-        return recorded(new CreateStructResponse(true, name));
+        return recorded(new CreateStructResponse(name));
     }
 
     @POST
@@ -548,7 +548,7 @@ public class WriteTools {
             ordinalOut[0] = comp.getOrdinal();
         });
 
-        return recorded(new AddStructFieldResponse(true, structName, fieldName, ordinalOut[0]));
+        return recorded(new AddStructFieldResponse(structName, fieldName, ordinalOut[0]));
     }
 
     @POST
@@ -576,7 +576,7 @@ public class WriteTools {
             struct.clearAtOffset(target.getOffset());
         });
 
-        return recorded(new RemoveStructFieldResponse(true, structName, removedOrdinal[0]));
+        return recorded(new RemoveStructFieldResponse(structName, removedOrdinal[0]));
     }
 
     @POST
@@ -637,7 +637,7 @@ public class WriteTools {
             resolvedName[0] = finalFieldName;
         });
 
-        return recorded(new ReplaceStructFieldResponse(true, structName, resolvedName[0], ordinalOut[0], typeName));
+        return recorded(new ReplaceStructFieldResponse(structName, resolvedName[0], ordinalOut[0], typeName));
     }
 
     @POST
@@ -688,7 +688,7 @@ public class WriteTools {
             cu.setComment(commentType, comment.isEmpty() ? null : comment);
         });
 
-        return new SetCommentResponse(true, addr, commentTypeName.toUpperCase());
+        return new SetCommentResponse(addr, commentTypeName.toUpperCase());
     }
 
     /**
@@ -737,7 +737,7 @@ public class WriteTools {
             throw new RuntimeException("Auto-analysis of '" + programName + "' failed: " + e.getMessage(), e);
         }
         int functionCount = program.getFunctionManager().getFunctionCount();
-        return new AnalyzeProgramResponse(true, programName, functionCount);
+        return new AnalyzeProgramResponse(programName, functionCount);
     }
 
     @POST
@@ -759,7 +759,7 @@ public class WriteTools {
 
         try {
             String programName = mgr.importBinary(filePath, projectDir, languageId, baseAddress);
-            return new ImportBinaryResponse(programName, projectDir != null ? projectDir : "/", true, null);
+            return new ImportBinaryResponse(programName, projectDir != null ? projectDir : "/");
         } catch (IllegalArgumentException e) {
             throw e;
         } catch (Exception e) {
@@ -1155,7 +1155,7 @@ public class WriteTools {
         // show — not the decompiler's inference for the same value.
         Variable committed = findCommittedVariable(func, finalName);
         DataType appliedType = committed != null ? committed.getDataType() : applied.getDataType();
-        return recorded(new SetVariableResponse(true, finalName,
+        return recorded(new SetVariableResponse(finalName,
                 appliedType != null ? appliedType.getName() : null, "temporary", resolvedStorage));
     }
 
@@ -1469,10 +1469,10 @@ public class WriteTools {
             String comment_type) {
     }
 
-    public record RenameFunctionResponse(boolean success, String new_name) {
+    public record RenameFunctionResponse(String new_name) {
     }
 
-    public record SetVariableResponse(boolean success, String name, String type_name,
+    public record SetVariableResponse(String name, String type_name,
             String kind,
             @Schema(description = "Storage identity ('storage@defined_at') the name you passed referred to when you last read this function. Present only when naming an earlier temporary had renumbered it since, in which case the write followed the value rather than the name.")
             String resolved_storage) {
@@ -1489,7 +1489,7 @@ public class WriteTools {
             String type_name) {
     }
 
-    public record SetGlobalResponse(boolean success, String name, String type_name) {
+    public record SetGlobalResponse(String name, String type_name) {
     }
 
     public record CreateLabelRequest(
@@ -1501,33 +1501,33 @@ public class WriteTools {
             String name) {
     }
 
-    public record CreateLabelResponse(boolean success, String name, String address) {
+    public record CreateLabelResponse(String name, String address) {
     }
 
-    public record SetFunctionPrototypeResponse(boolean success, String function,
+    public record SetFunctionPrototypeResponse(String function,
             String return_type_name, int parameter_count) {
     }
 
-    public record SetParameterTypeResponse(boolean success, int parameter_index,
+    public record SetParameterTypeResponse(int parameter_index,
             String type_name, String new_name) {
     }
 
-    public record CreateStructResponse(boolean success, String name) {
+    public record CreateStructResponse(String name) {
     }
 
-    public record AddStructFieldResponse(boolean success, String struct,
+    public record AddStructFieldResponse(String struct,
             String field_name, int ordinal) {
     }
 
-    public record RemoveStructFieldResponse(boolean success, String struct,
+    public record RemoveStructFieldResponse(String struct,
             int removed_ordinal) {
     }
 
-    public record ReplaceStructFieldResponse(boolean success, String struct,
+    public record ReplaceStructFieldResponse(String struct,
             String field_name, int ordinal, String type_name) {
     }
 
-    public record SetCommentResponse(boolean success, Address address, String comment_type) {
+    public record SetCommentResponse(Address address, String comment_type) {
     }
 
     public record ImportBinaryRequest(
@@ -1553,11 +1553,7 @@ public class WriteTools {
             @Schema(description = "Program name as registered in the Ghidra project. Use this value as the 'program' parameter in all subsequent tool calls.")
             String program,
             @Schema(description = "Project folder path where the program was saved.")
-            String project_dir,
-            @Schema(description = "True if import and auto-analysis completed successfully.")
-            boolean success,
-            @Schema(description = "Error message if import failed (null on success).")
-            String error) {
+            String project_dir) {
     }
 
     public record AnalyzeProgramRequest(
@@ -1567,8 +1563,6 @@ public class WriteTools {
     }
 
     public record AnalyzeProgramResponse(
-            @Schema(description = "True when auto-analysis completed and the program was saved.")
-            boolean success,
             @Schema(description = "Program name that was analyzed.")
             String program,
             @Schema(description = "Number of functions discovered after analysis.")

@@ -324,7 +324,6 @@ class ToolResourceIntegrationTest {
                 "name_or_address", FN_ADD,
                 "comment", "named-target comment",
                 "comment_type", "PLATE"));
-        assertTrue(response.success());
         assertEquals(addAddress, response.address());
     }
 
@@ -720,7 +719,6 @@ class ToolResourceIntegrationTest {
                 "name_or_address", "retype_probe_symbol",
                 "type_name", "int"));
 
-        assertTrue(response.success());
         assertEquals("retype_probe_symbol", response.name());
         assertEquals("int", response.type_name());
 
@@ -809,7 +807,6 @@ class ToolResourceIntegrationTest {
                 "name_or_address", "0x" + target,
                 "new_name", "g_dynamic_data_probe"));
 
-        assertTrue(response.success());
         assertEquals("g_dynamic_data_probe", response.name());
         assertEquals("g_dynamic_data_probe", program.getSymbolTable().getPrimarySymbol(target).getName());
     }
@@ -905,7 +902,6 @@ class ToolResourceIntegrationTest {
         // Happy path: import a valid binary not yet in the project
         WriteTools.ImportBinaryResponse response = writeTools.importBinary(
                 json("file_path", secondFixtureBinary.toString()));
-        assertTrue(response.success());
         assertNotNull(response.program(), "Imported program must have a name");
         assertFalse(response.program().isBlank(), "Imported program name must not be blank");
 
@@ -936,7 +932,6 @@ class ToolResourceIntegrationTest {
                     "file_path", blob.toString(),
                     "language_id", "ARM:LE:32:Cortex",
                     "base_address", "0x08000000"));
-            assertTrue(response.success());
 
             Program raw = programManager.getOrOpen(response.program());
             assertEquals("0x08000000", "0x" + raw.getImageBase(),
@@ -993,7 +988,6 @@ class ToolResourceIntegrationTest {
                 "program", programName,
                 "filename", "SearchMemoryStrings.java",
                 "args", array(TEST_SENTINEL, "0", "20", "4", "true")));
-        assertTrue(result.success(), "Script must execute without error");
         JsonObject output = parseJsonOutput(result.output());
         assertTrue(output.has("strings"), "Output must have 'strings' array");
         assertTrue(output.has("count"), "Output must have 'count'");
@@ -1150,7 +1144,7 @@ class ToolResourceIntegrationTest {
     }
 
     // -------------------------------------------------------------------------
-    // WriteTools – 9 routes
+    // WriteTools
     // -------------------------------------------------------------------------
 
     @Test
@@ -1159,7 +1153,6 @@ class ToolResourceIntegrationTest {
                 "program", programName,
                 "name_or_address", FN_MULTIPLY,
                 "new_name", "multiply_renamed"));
-        assertTrue(response.success());
 
         ReadTools.SearchFunctionsResponse search =
                 readTools.searchFunctions(programName, "multiply_renamed", 10);
@@ -1186,7 +1179,6 @@ class ToolResourceIntegrationTest {
                 "name_or_address", FN_ADD,
                 "name_or_storage", originalName,
                 "new_name", "renamed_add_variable"));
-        assertTrue(response.success());
 
         ReadTools.GetFunctionVariablesResponse after =
                 readTools.getFunctionVariables(programName, FN_ADD);
@@ -1250,7 +1242,6 @@ class ToolResourceIntegrationTest {
                 "name_or_address", FN_ADD,
                 "name_or_storage", "shadow_probe_symbol",
                 "new_name", originalName));
-        assertTrue(response.success());
         assertEquals(originalName, response.name());
     }
 
@@ -1264,7 +1255,6 @@ class ToolResourceIntegrationTest {
                         parameter("x", "int"),
                         parameter("y", "int"),
                         parameter("mode", "int"))));
-        assertTrue(response.success());
         assertEquals(3, response.parameter_count());
 
         // Verify the names were actually applied
@@ -1326,7 +1316,6 @@ class ToolResourceIntegrationTest {
                 "parameter_index", 0,
                 "type_name", "int",
                 "new_name", "lhs"));
-        assertTrue(response.success());
 
         ReadTools.GetFunctionVariablesResponse variables =
                 readTools.getFunctionVariables(programName, FN_COMPUTE);
@@ -1390,7 +1379,6 @@ class ToolResourceIntegrationTest {
                 "name", "CreateStructTest",
                 "size", 8,
                 "category", "/mcp"));
-        assertTrue(create.success());
 
         // override replaces the struct entirely
         WriteTools.CreateStructResponse override = writeTools.createStruct(json(
@@ -1398,7 +1386,6 @@ class ToolResourceIntegrationTest {
                 "name", "CreateStructTest",
                 "size", 16,
                 "override", true));
-        assertTrue(override.success());
 
         ReadTools.GetStructLayoutResponse layout =
                 readTools.getStructLayout(programName, "CreateStructTest");
@@ -1445,7 +1432,6 @@ class ToolResourceIntegrationTest {
                 "field_name", "size_field",
                 "type_name", "int",
                 "comment", "Field added by Java integration test"));
-        assertTrue(response.success());
 
         ReadTools.GetStructLayoutResponse layout =
                 readTools.getStructLayout(programName, "AddFieldTestStruct");
@@ -1487,7 +1473,6 @@ class ToolResourceIntegrationTest {
                 "program", programName,
                 "struct_name", "RemoveFieldTestStruct",
                 "field_name", "to_remove"));
-        assertTrue(response.success());
 
         ReadTools.GetStructLayoutResponse layout =
                 readTools.getStructLayout(programName, "RemoveFieldTestStruct");
@@ -1547,7 +1532,6 @@ class ToolResourceIntegrationTest {
                 "field_name", "original_field",
                 "type_name", "byte",
                 "new_name", "replaced_field"));
-        assertTrue(response.success());
 
         ReadTools.GetStructLayoutResponse layout =
                 readTools.getStructLayout(programName, "ReplaceFieldTestStruct");
@@ -1634,7 +1618,6 @@ class ToolResourceIntegrationTest {
                 "field_name", "maybe_gap_0x1",
                 "type_name", "byte",
                 "offset", 1));
-        assertTrue(resp.success());
 
         ReadTools.GetStructLayoutResponse after = readTools.getStructLayout(programName, "GapFillTestStruct");
         assertEquals(8, after.size(),
@@ -1677,7 +1660,6 @@ class ToolResourceIntegrationTest {
                 "struct_name", "OffsetPastEndTestStruct",
                 "field_name", "maybe_b_0x4",
                 "type_name", "int"));
-        assertTrue(appended.success());
         ReadTools.GetStructLayoutResponse layout = readTools.getStructLayout(programName, "OffsetPastEndTestStruct");
         assertEquals(8, layout.size(), "Plain append must still grow the struct");
         assertEquals(4, requireStructField(layout.fields(), "maybe_b_0x4").offset());
@@ -1749,7 +1731,6 @@ class ToolResourceIntegrationTest {
                 "name_or_address", withHexPrefix(addAddress),
                 "comment", commentText,
                 "comment_type", "PRE"));
-        assertTrue(response.success());
 
         Program program = programManager.getOrOpen(programName);
         Address address = program.getAddressFactory().getAddress(withHexPrefix(addAddress));
@@ -1769,7 +1750,6 @@ class ToolResourceIntegrationTest {
                     "name_or_address", withHexPrefix(addAddress),
                     "comment", "Comment type test: " + type,
                     "comment_type", type));
-            assertTrue(response.success(), "setComment must succeed for type: " + type);
             assertEquals(type, response.comment_type(), "Response type must match requested type: " + type);
         }
     }
@@ -1855,7 +1835,6 @@ class ToolResourceIntegrationTest {
         WriteTools.AnalyzeProgramResponse response =
                 writeTools.analyzeProgram(json("program", programName));
 
-        assertTrue(response.success());
         assertTrue(response.function_count() > 0, "Analysis must have found functions");
         assertTrue(program.getOptions(Program.PROGRAM_INFO)
                         .getBoolean(Program.ANALYZED_OPTION_NAME, false),
@@ -1883,7 +1862,7 @@ class ToolResourceIntegrationTest {
                 "Error must name the tool that fixes it: " + ex.getMessage());
 
         // The escape hatch: analyze_program opens it anyway, and afterwards reads work.
-        assertTrue(writeTools.analyzeProgram(json("program", programName)).success());
+        writeTools.analyzeProgram(json("program", programName));
         assertNotNull(programManager.getOrOpen(programName));
     }
 
@@ -2116,7 +2095,7 @@ class ToolResourceIntegrationTest {
     }
 
     // -------------------------------------------------------------------------
-    // ScriptTool – 4 routes
+    // ScriptTool
     // -------------------------------------------------------------------------
 
     @Test
@@ -2140,7 +2119,6 @@ class ToolResourceIntegrationTest {
                 StandardCharsets.UTF_8);
 
         ScriptTool.AddScriptResponse added = scriptTool.addScript(json("file_path", tmpScript.toString()));
-        assertTrue(added.success());
         try {
             ScriptTool.ListScriptsResponse mcpOnly = scriptTool.listScripts(true);
             assertFalse(mcpOnly.scripts().contains(added.filename()),
@@ -2171,7 +2149,6 @@ class ToolResourceIntegrationTest {
         int beforeCount = scriptTool.listScripts(false).count();
         ScriptTool.AddScriptResponse response = scriptTool.addScript(json(
                 "file_path", sourceScript.toString()));
-        assertTrue(response.success());
         assertTrue(Files.exists(sourceScript), "addScript should copy (not move) the source file");
 
         ScriptTool.ListScriptsResponse after = scriptTool.listScripts(false);
@@ -2209,9 +2186,9 @@ class ToolResourceIntegrationTest {
                 StandardCharsets.UTF_8);
 
         String filename = scriptTool.addScript(json("file_path", sourceScript.toString())).filename();
-        assertTrue(scriptTool.runScript(json(
+        scriptTool.runScript(json(
                 "program", programName,
-                "filename", filename)).success());
+                "filename", filename));
 
         reopenManager();
 
@@ -2239,12 +2216,10 @@ class ToolResourceIntegrationTest {
 
         ScriptTool.AddScriptResponse added = scriptTool.addScript(json(
                 "file_path", sourceScript.toString()));
-        assertTrue(added.success());
 
         ScriptTool.RunScriptResponse run = scriptTool.runScript(json(
                 "program", programName,
                 "filename", added.filename()));
-        assertTrue(run.success());
         assertTrue(run.output().contains("MCP_MANAGED_SCRIPT_SENTINEL"));
 
         // validation: path-traversal filename must be rejected
@@ -2311,8 +2286,6 @@ class ToolResourceIntegrationTest {
                     "program", programName,
                     "name_or_address", FN_ADD,
                     "new_name", FN_ADD + "_afterLeakTest"));
-            assertTrue(rename.success(),
-                    "renameFunction must succeed after a script that leaked a transaction");
 
             // Restore original name so later tests are unaffected.
             writeTools.renameFunction(json(
@@ -2412,10 +2385,10 @@ class ToolResourceIntegrationTest {
             assertNotSame(beforeRun, programManager.getOrOpen(programName));
 
             // And the reopened program is fully usable.
-            assertTrue(writeTools.renameFunction(json(
+            writeTools.renameFunction(json(
                     "program", programName,
                     "name_or_address", FN_ADD,
-                    "new_name", "maybe_add_after_open_tx")).success());
+                    "new_name", "maybe_add_after_open_tx"));
         } finally {
             scriptTool.deleteScript(json("filename", filename));
         }
@@ -2436,12 +2409,10 @@ class ToolResourceIntegrationTest {
 
         ScriptTool.AddScriptResponse added = scriptTool.addScript(json(
                 "file_path", sourceScript.toString()));
-        assertTrue(added.success());
         assertTrue(scriptTool.listScripts(false).scripts().contains(added.filename()));
 
         ScriptTool.DeleteScriptResponse deleted = scriptTool.deleteScript(json(
                 "filename", added.filename()));
-        assertTrue(deleted.success());
 
         assertFalse(scriptTool.listScripts(false).scripts().contains(added.filename()));
     }
@@ -2491,7 +2462,6 @@ class ToolResourceIntegrationTest {
         ScriptTool.RunScriptResponse result = scriptTool.runScript(json(
                 "program", programName,
                 "filename", filename));
-        assertTrue(result.success(), "Script must execute without error: " + filename);
 
         JsonObject output = parseJsonOutput(result.output());
         assertTrue(output.has("help"),
@@ -2535,7 +2505,6 @@ class ToolResourceIntegrationTest {
                 StandardCharsets.UTF_8);
 
         ScriptTool.AddScriptResponse added = scriptTool.addScript(json("file_path", tmpScript.toString()));
-        assertTrue(added.success());
         try {
             ScriptTool.ScriptDescriptionResponse desc =
                     scriptTool.getScriptDescription(added.filename());
@@ -2557,7 +2526,6 @@ class ToolResourceIntegrationTest {
         ScriptTool.RunScriptResponse result = scriptTool.runScript(json(
                 "program", programName,
                 "filename", "AuditFunction.java"));
-        assertTrue(result.success());
         JsonObject output = parseJsonOutput(result.output());
         assertTrue(output.has("help"), "Help response must contain 'help' field");
         assertTrue(output.get("help").getAsBoolean());
@@ -2571,7 +2539,6 @@ class ToolResourceIntegrationTest {
                 "program", programName,
                 "filename", "AuditFunction.java",
                 "args", array("add")));
-        assertTrue(result.success());
         JsonObject output = parseJsonOutput(result.output());
         assertEquals("add", output.get("name").getAsString());
         assertTrue(output.has("address"));
@@ -2593,7 +2560,6 @@ class ToolResourceIntegrationTest {
                 "program", programName,
                 "filename", "AuditFunction.java",
                 "args", array(FN_ADD)));
-        assertTrue(result.success());
         JsonObject output = parseJsonOutput(result.output());
         JsonArray callers = output.getAsJsonArray("callers");
         assertTrue(callers.size() >= 1,
@@ -2615,7 +2581,6 @@ class ToolResourceIntegrationTest {
                 "program", programName,
                 "filename", "AuditFunction.java",
                 "args", array("no_such_function_xyz_99999")));
-        assertTrue(result.success(), "Script itself should succeed even if function is not found");
         JsonObject output = parseJsonOutput(result.output());
         assertTrue(output.has("error"), "Output must contain 'error' field for unknown function");
     }
@@ -2625,7 +2590,6 @@ class ToolResourceIntegrationTest {
         ScriptTool.RunScriptResponse result = scriptTool.runScript(json(
                 "program", programName,
                 "filename", "AuditProgram.java"));
-        assertTrue(result.success(), "AuditProgram must run without error");
         JsonObject output = parseJsonOutput(result.output());
         assertTrue(output.has("help"), "No-arg invocation must return JSON with 'help' field");
         assertTrue(output.get("help").getAsBoolean(), "'help' field must be true");
@@ -2639,7 +2603,6 @@ class ToolResourceIntegrationTest {
                 "program", programName,
                 "filename", "AuditProgram.java",
                 "args", array("5")));
-        assertTrue(result.success(), "AuditProgram must run without error");
         JsonObject output = parseJsonOutput(result.output());
 
         // Top-level shape
@@ -2687,7 +2650,6 @@ class ToolResourceIntegrationTest {
                 "program", programName,
                 "filename", "AuditProgram.java",
                 "args", array("not_a_number")));
-        assertTrue(result.success(), "Script must not throw — bad N should produce error JSON");
         JsonObject output = parseJsonOutput(result.output());
         assertTrue(output.has("error"), "Invalid N must produce error JSON with 'error' field");
         assertTrue(output.get("error").getAsString().contains("not_a_number"),
@@ -2708,7 +2670,6 @@ class ToolResourceIntegrationTest {
         ScriptTool.RunScriptResponse result = scriptTool.runScript(json(
                 "program", programName,
                 "filename", "PropagateFunctionSignatures.java"));
-        assertTrue(result.success());
         JsonObject output = parseJsonOutput(result.output());
         assertTrue(output.has("help"), "Help response must contain 'help' field");
         assertTrue(output.get("help").getAsBoolean());
@@ -2736,7 +2697,6 @@ class ToolResourceIntegrationTest {
                             "nonexistent_xyz",     // target_programs: no such program in project
                             "MCPTestLib")));        // library_name
 
-            assertTrue(result.success());
             JsonObject output = parseJsonOutput(result.output());
             assertEquals(fidbPath.toString(), output.get("fidb_path").getAsString());
 
@@ -2785,8 +2745,6 @@ class ToolResourceIntegrationTest {
                 "struct_name", structName,
                 "field_name", "field_0",
                 "type_name", typeName));
-        assertTrue(response.success(),
-                "addStructField must accept built-in type '" + typeName + "'");
     }
 
     /**
@@ -2802,8 +2760,6 @@ class ToolResourceIntegrationTest {
                 "name_or_address", FN_ADD,
                 "return_type_name", typeName,
                 "parameters", new JsonArray()));
-        assertTrue(response.success(),
-                "setFunctionPrototype must accept built-in return type '" + typeName + "'");
     }
 
     /** Pointer-to-built-in type (e.g. "uint*") must resolve correctly. */
@@ -2822,7 +2778,6 @@ class ToolResourceIntegrationTest {
                 "struct_name", "BuiltinPtrTest",
                 "field_name", "p_uint",
                 "type_name", "uint*"));
-        assertTrue(response.success(), "addStructField must accept 'uint*' (pointer to built-in)");
     }
 
     /** Array-of-built-in type (e.g. "uint[4]") must resolve correctly. */
@@ -2840,7 +2795,6 @@ class ToolResourceIntegrationTest {
                 "struct_name", "BuiltinArrayTest",
                 "field_name", "data",
                 "type_name", "uint[4]"));
-        assertTrue(response.success(), "addStructField must accept 'uint[4]' (array of built-in)");
     }
 
     /** The standalone "pointer" type (generic void pointer) must resolve. */
@@ -2857,7 +2811,6 @@ class ToolResourceIntegrationTest {
                 "struct_name", "BuiltinStandalonePointerTest",
                 "field_name", "generic_ptr",
                 "type_name", "pointer"));
-        assertTrue(response.success(), "addStructField must accept 'pointer' (generic pointer type)");
     }
 
     /**

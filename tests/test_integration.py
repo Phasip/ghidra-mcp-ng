@@ -753,7 +753,6 @@ class TestWriteOperations:
              "name_or_address": "multiply",
              "new_name": new_name},
         )
-        assert result["success"] is True
         assert result["new_name"] == new_name
 
         # Rename back so subsequent tests can find 'multiply'
@@ -763,7 +762,6 @@ class TestWriteOperations:
              "name_or_address": new_name,
              "new_name": "multiply"},
         )
-        assert result["success"] is True
 
     def test_set_variable_renames(self, ghidra_server: GhidraClient, prog: str):
         # Get any variable from add() — Ghidra may model stack-spilled register
@@ -784,7 +782,6 @@ class TestWriteOperations:
              "name_or_storage": original_name,
              "new_name": new_name},
         )
-        assert result["success"] is True
         assert result["name"] == new_name
 
         # Rename back to original
@@ -812,7 +809,6 @@ class TestWriteOperations:
              "name_or_storage": target["name"],
              "type_name": "uint"},
         )
-        assert result["success"] is True
         assert result["name"] == target["name"]
         assert result["type_name"] == "uint"
 
@@ -1157,7 +1153,6 @@ class TestPrototypeWrites:
                  {"name": "mode", "type_name": "int"},
              ]},
         )
-        assert result["success"] is True
         assert result["parameter_count"] == 3
 
     def test_set_function_prototype_requires_parameter_fields(
@@ -1209,7 +1204,6 @@ class TestPrototypeWrites:
              "parameter_index": 0,
              "type_name": "int"},
         )
-        assert result["success"] is True
         assert result["parameter_index"] == 0
         assert result["type_name"] == "int"
 
@@ -1251,7 +1245,6 @@ class TestGlobalWrites:
              "name_or_address": "set_global_probe",
              "new_name": "set_global_probe_renamed"},
         )
-        assert result["success"] is True
         # 'name' — the name the symbol now has — is what set_variable and create_label report too.
         assert result["name"] == "set_global_probe_renamed"
 
@@ -1337,7 +1330,6 @@ class TestCommentWrites:
              "comment": comment_text,
              "comment_type": "PRE"},
         )
-        assert result["success"] is True
 
         # Clear the comment
         ghidra_server.ok(
@@ -1359,7 +1351,6 @@ class TestCommentWrites:
              "comment": "named-target comment",
              "comment_type": "PLATE"},
         )
-        assert result["success"] is True
         assert result["address"] == _hex(addr)
 
     def test_set_comment_requires_0x_prefix(self, ghidra_server: GhidraClient, prog: str):
@@ -1506,7 +1497,7 @@ class TestStructs:
             "create_struct",
             {"program": prog, "name": self.STRUCT_NAME, "size": 8},
         )
-        assert result["success"] is True
+        assert result["name"] == self.STRUCT_NAME
 
     def test_add_struct_field(self, ghidra_server: GhidraClient, prog: str):
         result = ghidra_server.ok(
@@ -1517,7 +1508,8 @@ class TestStructs:
              "type_name": "int",
              "comment": "Size field added by integration test"},
         )
-        assert result["success"] is True
+        assert result["field_name"] == "size_field"
+        assert result["ordinal"] == 0
 
         second = ghidra_server.ok(
             "add_struct_field",
@@ -1527,7 +1519,7 @@ class TestStructs:
              "type_name": "int",
              "comment": "Tail field added by integration test"},
         )
-        assert second["success"] is True
+        assert second["field_name"] == "tail_field"
 
     def test_get_struct_layout(self, ghidra_server: GhidraClient, prog: str):
         result = ghidra_server.ok(
@@ -1546,7 +1538,6 @@ class TestStructs:
              "struct_name": self.STRUCT_NAME,
              "field_name": "size_field"},
         )
-        assert result["success"] is True
 
         layout = ghidra_server.ok(
             "get_struct_layout",
@@ -1568,7 +1559,6 @@ class TestStructs:
             "replace_struct_field",
             arguments,
         )
-        assert result["success"] is True
 
         layout = ghidra_server.ok(
             "get_struct_layout",
@@ -1604,7 +1594,6 @@ class TestStructs:
             "create_struct",
             {"program": prog, "name": self.STRUCT_NAME, "size": 16, "override": True},
         )
-        assert result["success"] is True
 
         layout = ghidra_server.ok(
             "get_struct_layout",
@@ -1631,7 +1620,6 @@ class TestStructs:
                 "comment": "16-byte buffer",
             },
         )
-        assert result["success"] is True
 
         layout = ghidra_server.ok(
             "get_struct_layout",
@@ -1925,7 +1913,6 @@ class TestScript:
         )
 
         added = ghidra_server.ok("add_script", {"file_path": str(source)})
-        assert added["success"] is True
         filename = added["filename"]
         assert source.exists()  # add_script copies, does not move the source file
 
@@ -1936,11 +1923,9 @@ class TestScript:
             "run_script",
             {"program": prog, "filename": filename},
         )
-        assert run["success"] is True
         assert self.SENTINEL in run.get("output", "")
 
         deleted = ghidra_server.ok("delete_script", {"filename": filename})
-        assert deleted["success"] is True
 
         after_delete = ghidra_server.ok("list_scripts")
         assert set(after_delete.get("scripts", [])) == before_names
@@ -2003,7 +1988,6 @@ class TestScript:
         try:
             source.unlink()
             run = ghidra_server.ok("run_script", {"program": prog, "filename": filename})
-            assert run["success"] is True
             assert run["source_state"] == "source_missing"
             assert run["source_path"] == str(source)
             assert "MCP_SOURCE_GONE" in run["output"]
@@ -2295,7 +2279,7 @@ class TestUnknownFieldRejection:
             "create_struct",
             {"program": prog, "name": name, "size": 4, "category": "/test", "override": False},
         )
-        assert result["success"] is True
+        assert result["name"] == name
 
     def test_batch_items_are_checked_like_standalone_calls(
             self, ghidra_server: GhidraClient, prog: str):
@@ -2378,7 +2362,6 @@ class TestImportLeavesProgramWritable:
         shutil.copy(src, staged)
 
         imported = ghidra_server.ok("import_binary", {"file_path": str(staged)})
-        assert imported["success"] is True
         program = "/" + imported["program"]
 
         # The write must SUCCEED, not merely apply in memory. Before the fix this returned
@@ -2388,7 +2371,6 @@ class TestImportLeavesProgramWritable:
             "rename_function",
             {"program": program, "name_or_address": "multiply", "new_name": "multiply_after_import"},
         )
-        assert renamed["success"] is True
 
         # And it must be durable: a fresh read of the program still sees the new name.
         found = ghidra_server.ok(

@@ -341,7 +341,7 @@ class TestDiscoveryTools:
         assert result == {"status": "ok"}
 
     def test_call_tool_forwards_arguments(self):
-        with patch.object(bridge, "_post", return_value={"success": True}) as mock_post:
+        with patch.object(bridge, "_post", return_value={"new_name": "g"}) as mock_post:
             self._call("call_tool", {
                 "tool_name": "rename_function",
                 "arguments": {"program": "p", "name_or_address": "f", "new_name": "g"},
@@ -397,7 +397,7 @@ class TestDispatch:
         assert "query=main" in url
 
     def test_post_operation_calls_post_with_body(self):
-        with patch.object(bridge, "_post", return_value={"success": True}) as mock_post:
+        with patch.object(bridge, "_post", return_value={"new_name": "g"}) as mock_post:
             result = bridge._dispatch(
                 _MINIMAL_SPEC, "http://host", "rename_function",
                 {"program": "p", "name_or_address": "f", "new_name": "g"},
@@ -406,7 +406,7 @@ class TestDispatch:
             "http://host/rename_function",
             {"program": "p", "name_or_address": "f", "new_name": "g"},
         )
-        assert result == {"success": True}
+        assert result == {"new_name": "g"}
 
     def test_unknown_tool_raises_value_error(self):
         with pytest.raises(ValueError, match="Unknown tool"):
