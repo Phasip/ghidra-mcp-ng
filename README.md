@@ -342,29 +342,40 @@ ghidra-mcp-ng/
 ├── build_and_install.py        # Build and install the extension (arg: ghidra path)
 ├── start.py                    # Server launcher (named flags: --ghidra, --project, --rules, --port, --install-ext)
 ├── bridge.py                   # Minimal Python MCP bridge (stdlib only)
+├── ghidra_scripts/             # Bundled GhidraScripts, reached through run_script
+├── scripts/
+│   └── generate_tools_docs.py  # Renders TOOLS.md from the OpenAPI document
 ├── src/
 │   ├── main/java/com/ghidramcpng/
 │   │   ├── GhidraMcpServer.java          # GhidraLaunchable entry point
+│   │   ├── GenerateSpec.java             # Emits build/openapi.json without a running server
 │   │   ├── mcp/
-│   │   │   ├── McpServer.java            # JSON-RPC 2.0 stdio loop
-│   │   │   └── ToolRegistry.java         # Tool registration and dispatch
+│   │   │   ├── HttpApiServer.java        # Jersey bootstrap, providers, /health and /openapi.json
+│   │   │   ├── ApiSupport.java           # Response envelope and shared error wording
+│   │   │   ├── McpToolHints.java         # Per-tool behaviour hints published as "x-mcp"
+│   │   │   └── ServerLog.java            # Stack traces behind the error_id in a 500
 │   │   ├── program/
-│   │   │   └── ProgramManager.java       # Lazy program open, transactions, save
+│   │   │   ├── ProgramManager.java       # Lazy program open, transactions, save
+│   │   │   └── TemporaryNames.java       # Tracks decompiler temporaries across renames
 │   │   ├── rules/
 │   │   │   ├── RulesConfig.java          # SnakeYAML bean for rules.yaml
 │   │   │   ├── RulesEngine.java          # Pattern validation + exemptions
 │   │   │   └── NamingRuleViolation.java  # Thrown on rule violation
+│   │   ├── model/                        # Shared DTO records
 │   │   └── tools/
 │   │       ├── ToolHelpers.java          # Shared lookup + decompiler utilities
 │   │       ├── ReadTools.java            # Read-only HTTP tools
 │   │       ├── WriteTools.java           # Program-modifying HTTP tools
 │   │       └── ScriptTool.java           # Script management and execution tools
 │   └── test/java/com/ghidramcpng/
-│       ├── mcp/McpServerTest.java        # 13 JSON-RPC protocol tests
-│       └── rules/RulesEngineTest.java    # 16 naming-rule tests
+│       ├── mcp/McpToolHintsTest.java     # Guards the behaviour-hint tables against drift
+│       ├── rules/RulesEngineTest.java    # Naming-rule mechanics
+│       └── tools/ToolResourceIntegrationTest.java   # Every route against a real program
 └── tests/
-    ├── conftest.py                       # pytest fixtures (skipped without live project)
-    └── test_integration.py               # 30 integration tests
+    ├── conftest.py                       # pytest fixtures (live server per worker)
+    ├── test_bridge.py                    # bridge.py, offline
+    ├── test_integration.py               # Every tool against a live server
+    └── test_schema_matches_implementation.py
 ```
 
 
