@@ -30,11 +30,11 @@ import bridge  # noqa: E402
 
 _MINIMAL_SPEC: dict = {
     "paths": {
-        "/check_connection": {
+        "/list_scripts": {
             "get": {
-                "operationId": "check_connection",
-                "tags": ["Program"],
-                "summary": "Check server connectivity",
+                "operationId": "list_scripts",
+                "tags": ["Scripting"],
+                "summary": "List available Ghidra scripts",
                 "parameters": [],
             }
         },
@@ -214,7 +214,7 @@ class TestOpenApiToMcpTools:
 
     def test_omits_operations_outside_the_hot_core(self):
         tools = bridge._openapi_to_mcp_tools(_MINIMAL_SPEC)
-        assert "check_connection" not in [t["name"] for t in tools]
+        assert "list_scripts" not in [t["name"] for t in tools]
 
     def test_always_offers_the_discovery_tools(self):
         tools = bridge._openapi_to_mcp_tools(_MINIMAL_SPEC)
@@ -238,7 +238,7 @@ class TestOpenApiToMcpTools:
     def test_list_tools_advertises_the_categories(self):
         tools = bridge._openapi_to_mcp_tools(_MINIMAL_SPEC)
         desc = next(t for t in tools if t["name"] == "list_tools")["description"]
-        assert "Annotation" in desc and "Functions" in desc and "Program" in desc
+        assert "Annotation" in desc and "Functions" in desc and "Scripting" in desc
 
     def test_operation_without_operationId_is_skipped(self):
         spec = {
@@ -280,13 +280,13 @@ class TestDiscoveryTools:
         assert result["categories"] == {
             "Annotation": ["rename_function"],
             "Functions": ["search_functions"],
-            "Program": ["check_connection"],
+            "Scripting": ["list_scripts"],
         }
 
     def test_list_tools_by_category_carries_summaries(self):
-        result = self._call("list_tools", {"category": "Program"})
+        result = self._call("list_tools", {"category": "Scripting"})
         assert result["tools"] == [
-            {"name": "check_connection", "summary": "Check server connectivity"}
+            {"name": "list_scripts", "summary": "List available Ghidra scripts"}
         ]
 
     def test_untagged_operation_falls_back_to_other(self):
@@ -306,8 +306,8 @@ class TestDiscoveryTools:
         assert result["inputSchema"]["required"] == ["program"]
 
     def test_describe_tool_reaches_operations_outside_the_hot_core(self):
-        assert self._call("describe_tool", {"tool_name": "check_connection"})["name"] \
-            == "check_connection"
+        assert self._call("describe_tool", {"tool_name": "list_scripts"})["name"] \
+            == "list_scripts"
 
     def test_describe_tool_requires_a_tool_name(self):
         with pytest.raises(ValueError, match="Required parameter 'tool_name' is missing"):
@@ -336,8 +336,8 @@ class TestDiscoveryTools:
 
     def test_call_tool_runs_an_operation_outside_the_hot_core(self):
         with patch.object(bridge, "_get", return_value={"status": "ok"}) as mock_get:
-            result = self._call("call_tool", {"tool_name": "check_connection"})
-        mock_get.assert_called_once_with("http://host/check_connection")
+            result = self._call("call_tool", {"tool_name": "list_scripts"})
+        mock_get.assert_called_once_with("http://host/list_scripts")
         assert result == {"status": "ok"}
 
     def test_call_tool_forwards_arguments(self):
@@ -362,7 +362,7 @@ class TestDiscoveryTools:
         # Flattening the target tool's arguments is the other way this call goes wrong; running
         # the tool with no arguments at all would report a missing 'program' and hide the cause.
         with pytest.raises(ValueError) as e:
-            self._call("call_tool", {"tool_name": "check_connection", "program": "p"})
+            self._call("call_tool", {"tool_name": "list_scripts", "program": "p"})
         assert "Unknown field 'program' for tool 'call_tool'" in str(e.value)
         assert "under 'arguments'" in str(e.value)
 
@@ -382,8 +382,8 @@ class TestDiscoveryTools:
 class TestDispatch:
     def test_get_operation_called_without_args(self):
         with patch.object(bridge, "_get", return_value={"status": "ok"}) as mock_get:
-            result = bridge._dispatch(_MINIMAL_SPEC, "http://host", "check_connection", {})
-        mock_get.assert_called_once_with("http://host/check_connection")
+            result = bridge._dispatch(_MINIMAL_SPEC, "http://host", "list_scripts", {})
+        mock_get.assert_called_once_with("http://host/list_scripts")
         assert result == {"status": "ok"}
 
     def test_get_operation_appends_query_string(self):
@@ -559,8 +559,8 @@ class TestMainLoopToolsList:
         names = [t["name"] for t in tools]
         assert "rename_function" in names
         assert _META.issubset(set(names))
-        # check_connection is reachable only through the discovery tools
-        assert "check_connection" not in names
+        # list_scripts is reachable only through the discovery tools
+        assert "list_scripts" not in names
 
     def test_tools_list_error_on_connection_refused(self):
         err = urllib.error.URLError("Connection refused")
@@ -588,7 +588,7 @@ class TestMainLoopToolsCall:
         ))
         responses = _run_main_with_inputs(
             {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
-             "params": {"name": "check_connection", "arguments": {}}},
+             "params": {"name": "list_scripts", "arguments": {}}},
             get_mock=get_mock,
         )
         r = responses[0]
@@ -635,7 +635,7 @@ class TestMainLoopToolsCall:
 
     def test_tools_call_http_500_returns_is_error_with_hint(self):
         http_err = urllib.error.HTTPError(
-            url="http://testhost/check_connection",
+            url="http://testhost/list_scripts",
             code=500,
             msg="Internal Server Error",
             hdrs=MagicMock(),
@@ -644,7 +644,7 @@ class TestMainLoopToolsCall:
         get_mock = MagicMock(side_effect=[_MINIMAL_SPEC, http_err])
         responses = _run_main_with_inputs(
             {"jsonrpc": "2.0", "id": 8, "method": "tools/call",
-             "params": {"name": "check_connection", "arguments": {}}},
+             "params": {"name": "list_scripts", "arguments": {}}},
             get_mock=get_mock,
         )
         r = responses[0]
@@ -657,7 +657,7 @@ class TestMainLoopToolsCall:
         get_mock = MagicMock(side_effect=[_MINIMAL_SPEC, url_err])
         responses = _run_main_with_inputs(
             {"jsonrpc": "2.0", "id": 9, "method": "tools/call",
-             "params": {"name": "check_connection", "arguments": {}}},
+             "params": {"name": "list_scripts", "arguments": {}}},
             get_mock=get_mock,
         )
         r = responses[0]

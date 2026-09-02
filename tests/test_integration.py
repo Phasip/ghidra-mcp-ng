@@ -116,6 +116,11 @@ class TestHealth:
         # rather than a literal, so adding a tool cannot leave this quietly wrong.
         assert h["tools"] == len(ghidra_server.tools())
 
+    def test_health_reports_the_built_version(self, ghidra_server: GhidraClient):
+        # read from extension.properties, so it cannot drift from the build being run
+        version = ghidra_server.health().get("version")
+        assert version and version != "unknown"
+
     def test_health_identifies_the_server_process(self, ghidra_server: GhidraClient):
         # bridge.py caches the generated schema and re-fetches it when this changes; without
         # it a rebuilt server keeps being described by the schema of the one it replaced.
@@ -129,7 +134,7 @@ class TestHealth:
         names = {t["name"] for t in tools}
         expected = {
             # ReadTools
-            "check_connection", "list_project_files",
+            "list_project_files",
             "list_exports", "list_imports", "list_data_type_categories",
             "get_program_info", "list_globals",
             "get_function_info", "get_address_info", "get_calling_conventions",
@@ -175,10 +180,6 @@ class TestHealth:
 # ---------------------------------------------------------------------------
 
 class TestConnectionAndProject:
-    def test_check_connection(self, ghidra_server: GhidraClient):
-        result = ghidra_server.ok("check_connection")
-        assert result["status"] == "ok"
-
     def test_list_project_files(self, ghidra_server: GhidraClient, prog: str):
         result = ghidra_server.ok("list_project_files")
         assert "files" in result

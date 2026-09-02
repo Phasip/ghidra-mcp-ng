@@ -173,16 +173,8 @@ class ToolResourceIntegrationTest {
     }
 
     // -------------------------------------------------------------------------
-    // ReadTools – 25 routes
+    // ReadTools
     // -------------------------------------------------------------------------
-
-    @Test
-    void checkConnection_returnsOk() {
-        ReadTools.CheckConnectionResponse connection = readTools.checkConnection();
-        assertEquals("ok", connection.status());
-        assertNotNull(connection.version(), "version must not be null");
-        assertFalse(connection.version().isBlank(), "version must not be blank");
-    }
 
     @Test
     void listProjectFiles_containsImportedProgram() {

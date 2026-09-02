@@ -299,10 +299,6 @@ Run one allowlisted read or write tool many times with different arguments, retu
 | `tool` | string | yes |  | Allowlisted read or write tool operationId to execute. |
 | `calls` | array of object | yes |  | List of argument objects, each exactly what the tool takes on its own. One tool call is executed per item, in order; a failed item does not stop the rest. Maximum 50. |
 
-### `check_connection`
-
-Check if the Ghidra MCP server is running and responsive.
-
 ### `get_program_info`
 
 Program metadata: image base, executable format, language/compiler IDs, memory blocks.

@@ -53,8 +53,22 @@ import java.util.TreeSet;
  */
 public class HttpApiServer {
 
-    private static final String VERSION = "0.1.0";
+    /** Read from extension.properties so /health and the schema never drift from the build. */
+    private static final String VERSION = loadVersion();
+
     private static final String OPENAPI_CONTEXT_ID = "ghidra-mcp-ng";
+
+    private static String loadVersion() {
+        try (var in = HttpApiServer.class.getClassLoader().getResourceAsStream("extension.properties")) {
+            if (in == null) return "unknown";
+            var props = new java.util.Properties();
+            props.load(in);
+            var version = props.getProperty("version");
+            return version != null && !version.isBlank() ? version.trim() : "unknown";
+        } catch (Exception e) {
+            return "unknown";
+        }
+    }
 
     /**
      * Identifies this server process. The OpenAPI schema is generated from the code that is

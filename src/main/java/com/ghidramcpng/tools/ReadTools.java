@@ -85,8 +85,6 @@ public class ReadTools {
 
     public static final int TOOL_COUNT = ToolHelpers.countEndpoints(ReadTools.class);
 
-    private static final String SERVER_VERSION = loadVersion();
-
     /** Default and ceiling for the xref tools' 'limit'; shared by both and by the batch dispatch. */
     private static final int DEFAULT_XREF_LIMIT = 500;
     private static final int MAX_XREF_LIMIT = 5000;
@@ -106,15 +104,6 @@ public class ReadTools {
         this.decompileTimeoutSeconds = rules.getDecompileTimeoutSeconds();
         this.writeTools = writeTools;
         this.temporaryNames = temporaryNames;
-    }
-
-    @GET
-    @Path("/check_connection")
-    @Operation(tags = "Program", operationId = "check_connection", summary = "Check if the Ghidra MCP server is running and responsive.")
-    @ApiResponse(responseCode = "200", description = "Connection status",
-            content = @Content(schema = @Schema(implementation = CheckConnectionResponse.class)))
-    public CheckConnectionResponse checkConnection() {
-        return new CheckConnectionResponse("ok", "ghidra-mcp-ng", SERVER_VERSION);
     }
 
     @GET
@@ -347,7 +336,6 @@ public class ReadTools {
             "set_global",
             "set_parameter_type",
             "set_variable",
-            "check_connection",
             "decompile_function",
             "get_address_info",
             "get_calling_conventions",
@@ -1476,18 +1464,6 @@ public class ReadTools {
         return value;
     }
 
-    private static String loadVersion() {
-        try (var in = ReadTools.class.getClassLoader().getResourceAsStream("extension.properties")) {
-            if (in == null) return "unknown";
-            var props = new java.util.Properties();
-            props.load(in);
-            var version = props.getProperty("version");
-            return version != null && !version.isBlank() ? version.trim() : "unknown";
-        } catch (Exception e) {
-            return "unknown";
-        }
-    }
-
     private static List<String> requireBodyStringList(JsonObject body, String fieldName) {
         if (body == null || !body.has(fieldName) || body.get(fieldName).isJsonNull()) {
             throw new IllegalArgumentException("Required parameter '" + fieldName + "' is missing");
@@ -1605,7 +1581,6 @@ public class ReadTools {
                 optional(args, "start_address", null),
                 optional(args, "end_address", null),
                 optionalInt(args, "limit", 500));
-            case "check_connection" -> checkConnection();
             case "list_project_files" -> listProjectFiles();
             case "list_exports" -> listExports(required(args, "program"));
             case "list_imports" -> listImports(required(args, "program"));
@@ -1662,9 +1637,6 @@ public class ReadTools {
         }
         return parent.getName() != null && parent.getName().equalsIgnoreCase("Global");
         }
-
-    public record CheckConnectionResponse(String status, String server, String version) {
-    }
 
     public record ListProjectFilesResponse(List<String> files, int count) {
     }
