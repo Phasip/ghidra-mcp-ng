@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import sys
 import json
+import socket
 import difflib
 import urllib.request
 import urllib.error
@@ -68,6 +69,14 @@ INSTRUCTIONS = (
 # whose whole design is about spending context carefully. Revisit if hosts start suppressing the
 # text duplicate.
 
+# How long to wait on a tool's HTTP call. Slow tools override this from the spec's x-mcp block
+# (see McpToolHints.java); these are the defaults for everything else.
+DEFAULT_GET_TIMEOUT = 60
+DEFAULT_POST_TIMEOUT = 120
+
+# Meta endpoints (/health, /openapi.json) answer immediately or not at all.
+META_TIMEOUT = 30
+
 # Tools listed natively, with full schemas, in every session. These are the ones a
 # session reaches for constantly, where a discovery round trip would be pure overhead.
 # Everything else is discoverable via list_tools/describe_tool and callable via
@@ -95,20 +104,43 @@ UNCATEGORIZED = "Other"
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
-def _get(url: str) -> Any:
-    with urllib.request.urlopen(url, timeout=30) as r:
+def _get(url: str, timeout: int = META_TIMEOUT) -> Any:
+    with urllib.request.urlopen(url, timeout=timeout) as r:
         return json.loads(r.read().decode())
 
 
-def _post(url: str, data: dict) -> Any:
+def _post(url: str, data: dict, timeout: int = DEFAULT_POST_TIMEOUT) -> Any:
     body = json.dumps(data).encode()
     req = urllib.request.Request(
         url, data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=120) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """True for a request that ran out of time, as opposed to one that never connected.
+
+    socket.timeout is TimeoutError from 3.10 on and an OSError subclass before it; urllib raises
+    it bare on a slow read and wrapped in URLError on a slow connect, so both are checked.
+    """
+    return isinstance(exc, socket.timeout) or isinstance(getattr(exc, "reason", None), socket.timeout)
+
+
+class ToolTimeout(Exception):
+    """A tool that outlasted the time the bridge was willing to wait for it."""
+
+    def __init__(self, tool: str, seconds: int):
+        super().__init__(
+            f"'{tool}' did not return within {seconds}s, so the bridge stopped waiting. The Ghidra "
+            f"server is still running and is probably still working on it — analysis, imports and "
+            f"scripts can all outlast this. Check whether it finished (list_project_files for an "
+            f"import, a read tool for an edit) before running it again."
+        )
+        self.tool = tool
+        self.seconds = seconds
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +290,30 @@ def _input_schema(spec: dict, op: dict, method: str) -> dict:
     return result
 
 
+def _annotations(op: dict, method: str) -> dict:
+    """The MCP behaviour hints a host reads when deciding what it may run without asking.
+
+    Most of it follows from the HTTP method — a GET reads, a POST writes — and the exceptions
+    ride in on the spec's x-mcp block, which McpToolHints.java fills in. openWorldHint defaults
+    to false rather than to MCP's true because this whole surface is bounded by the Ghidra
+    project; the three tools that reach past it say so themselves.
+    """
+    read_only = method == "get"
+    hints = op.get("x-mcp") or {}
+    return {
+        "readOnlyHint": read_only,
+        "destructiveHint": hints.get("destructive", not read_only),
+        "idempotentHint": hints.get("idempotent", read_only),
+        "openWorldHint": hints.get("open_world", False),
+    }
+
+
+def _timeout(op: dict, method: str) -> int:
+    hints = op.get("x-mcp") or {}
+    default = DEFAULT_GET_TIMEOUT if method == "get" else DEFAULT_POST_TIMEOUT
+    return int(hints.get("timeout_seconds", default))
+
+
 def _index(spec: dict) -> dict[str, dict]:
     """Map every operationId to its path, HTTP method, category and raw operation."""
     ops: dict[str, dict] = {}
@@ -289,6 +345,7 @@ def _tool_entry(spec: dict, name: str, entry: dict) -> dict:
         "name": name,
         "description": entry["op"].get("summary", name),
         "inputSchema": _input_schema(spec, entry["op"], entry["method"]),
+        "annotations": _annotations(entry["op"], entry["method"]),
     }
 
 
@@ -299,6 +356,15 @@ def _tool_entry(spec: dict, name: str, entry: dict) -> dict:
 # describe the tool surface rather than touching a program, and the server already
 # publishes everything they need at /openapi.json.
 # ---------------------------------------------------------------------------
+
+# list_tools and describe_tool read the schema the bridge already holds; they touch nothing.
+_DISCOVERY_ANNOTATIONS = {
+    "readOnlyHint": True,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": False,
+}
+
 
 def _meta_tools(ops: dict[str, dict]) -> list[dict]:
     category_names = sorted({e["category"] for e in ops.values()})
@@ -323,6 +389,7 @@ def _meta_tools(ops: dict[str, dict]) -> list[dict]:
                 },
                 "additionalProperties": False,
             },
+            "annotations": _DISCOVERY_ANNOTATIONS,
         },
         {
             "name": "describe_tool",
@@ -341,6 +408,7 @@ def _meta_tools(ops: dict[str, dict]) -> list[dict]:
                 "required": ["tool_name"],
                 "additionalProperties": False,
             },
+            "annotations": _DISCOVERY_ANNOTATIONS,
         },
         {
             "name": "call_tool",
@@ -362,6 +430,14 @@ def _meta_tools(ops: dict[str, dict]) -> list[dict]:
                 },
                 "required": ["tool_name"],
                 "additionalProperties": False,
+            },
+            # call_tool is only ever as safe as the tool it is asked to run, and it can run any
+            # of them, so it claims nothing.
+            "annotations": {
+                "readOnlyHint": False,
+                "destructiveHint": True,
+                "idempotentHint": False,
+                "openWorldHint": True,
             },
         },
     ]
@@ -457,6 +533,7 @@ def _do_describe_tool(spec: dict, ops: dict[str, dict], arguments: dict) -> Any:
         "category": entry["category"],
         "description": entry["op"].get("summary", name),
         "inputSchema": _input_schema(spec, entry["op"], entry["method"]),
+        "annotations": _annotations(entry["op"], entry["method"]),
     }
 
 
@@ -487,14 +564,23 @@ def _dispatch(spec: dict, base: str, name: str, arguments: dict) -> Any:
 
     entry = ops[name]
     url = base + entry["path"]
-    if entry["method"] == "get":
-        if arguments:
-            # doseq spreads a list into repeated params, which is what the server's
-            # List<String> query params (ref_types) parse; without it the list arrives
-            # as its Python repr and matches no reference type.
-            url = f"{url}?{urllib.parse.urlencode(arguments, doseq=True)}"
-        return _get(url)
-    return _post(url, arguments)
+    seconds = _timeout(entry["op"], entry["method"])
+    try:
+        if entry["method"] == "get":
+            if arguments:
+                # doseq spreads a list into repeated params, which is what the server's
+                # List<String> query params (ref_types) parse; without it the list arrives
+                # as its Python repr and matches no reference type.
+                url = f"{url}?{urllib.parse.urlencode(arguments, doseq=True)}"
+            return _get(url, seconds)
+        return _post(url, arguments, seconds)
+    except (urllib.error.URLError, OSError) as e:
+        # Running out of time is not the same failure as never reaching the server, and telling
+        # an agent to check whether the server is running is actively wrong when it is running
+        # and still working. Name which one happened.
+        if _is_timeout(e):
+            raise ToolTimeout(name, seconds) from e
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -637,6 +723,10 @@ def _run_loop(base: str, log) -> None:
                 resp = _tool_result(id_, str(e), is_error=True)
                 _send(resp)
                 log("CALL", f"{name} → ValueError: {e}")
+            except ToolTimeout as e:
+                resp = _tool_result(id_, str(e), is_error=True)
+                _send(resp)
+                log("CALL", f"{name} → timeout after {e.seconds}s")
             except urllib.error.HTTPError as e:
                 body = e.read().decode() if hasattr(e, "read") else ""
                 msg = _error_text(e.code, body, e.reason)

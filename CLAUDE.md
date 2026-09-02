@@ -106,7 +106,9 @@ src/main/java/com/ghidramcpng/
                            StructField, DataTypeEntry, ExportEntry, ImportEntry, StringEntry.
 
 bridge.py                  stdlib-only MCP↔HTTP bridge (no deps). Owns the progressive-disclosure
-                           layer: HOT_CORE + list_tools/describe_tool/call_tool (principle 3).
+                           layer: HOT_CORE + list_tools/describe_tool/call_tool (principle 3),
+                           protocol negotiation, and the OpenAPI→MCP translation (tool
+                           annotations, input schemas, result rendering).
 start.py, build_and_install.py   Launch / build+install helpers.
 rules.yaml                 Naming-convention + timeout config (optional at runtime).
 TOOLS.md                   GENERATED tool reference — do not hand-edit; regenerate from the spec.

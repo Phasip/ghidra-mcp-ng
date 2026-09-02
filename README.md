@@ -287,6 +287,23 @@ server process: `/health` carries a `started_at` that changes on every start, an
 re-fetches when it does. Without that, a rebuilt-and-restarted server keeps being described by
 the schema of the one it replaced, and `describe_tool` advertises fields the live server rejects.
 
+### What the bridge publishes
+
+Everything an MCP client sees is derived from that document — no tool is defined in `bridge.py`.
+
+- **Protocol version.** The bridge speaks `2025-06-18` back to `2024-11-05` and answers with the
+  version the client asked for when it is one of those, otherwise with the newest it supports.
+- **Tool annotations.** Each tool carries `readOnlyHint`, `destructiveHint`, `idempotentHint` and
+  `openWorldHint`, so a host can auto-approve a lookup without auto-approving a script run. Most
+  of it follows from the method — a GET reads and repeats harmlessly, a POST does neither — and
+  `McpToolHints.java` names the tools that contradict the default. `TOOLS.md` prints the result
+  under every tool.
+- **Timeouts.** Also from `McpToolHints.java`: full auto-analysis, imports and script runs get 30
+  minutes rather than the default two, and a call that does run out of time is reported as a
+  timeout against a server that is still working, not as an unreachable server.
+- **Results.** Structured results arrive as compact JSON; a multi-line string — decompiled C,
+  script output — is printed as itself rather than as a JSON-escaped one-liner.
+
 ### Specialized analyses are scripts, not tools
 
 The tool surface holds general primitives only — functions, addresses, symbols, types, memory.

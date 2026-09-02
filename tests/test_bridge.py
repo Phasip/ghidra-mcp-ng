@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import socket
 import sys
 import urllib.error
 from typing import Any
@@ -342,7 +343,7 @@ class TestDiscoveryTools:
     def test_call_tool_runs_an_operation_outside_the_hot_core(self):
         with patch.object(bridge, "_get", return_value={"status": "ok"}) as mock_get:
             result = self._call("call_tool", {"tool_name": "list_scripts"})
-        mock_get.assert_called_once_with("http://host/list_scripts")
+        mock_get.assert_called_once_with("http://host/list_scripts", bridge.DEFAULT_GET_TIMEOUT)
         assert result == {"status": "ok"}
 
     def test_call_tool_forwards_arguments(self):
@@ -388,7 +389,7 @@ class TestDispatch:
     def test_get_operation_called_without_args(self):
         with patch.object(bridge, "_get", return_value={"status": "ok"}) as mock_get:
             result = bridge._dispatch(_MINIMAL_SPEC, "http://host", "list_scripts", {})
-        mock_get.assert_called_once_with("http://host/list_scripts")
+        mock_get.assert_called_once_with("http://host/list_scripts", bridge.DEFAULT_GET_TIMEOUT)
         assert result == {"status": "ok"}
 
     def test_get_operation_appends_query_string(self):
@@ -410,6 +411,7 @@ class TestDispatch:
         mock_post.assert_called_once_with(
             "http://host/rename_function",
             {"program": "p", "name_or_address": "f", "new_name": "g"},
+            bridge.DEFAULT_POST_TIMEOUT,
         )
         assert result == {"new_name": "g"}
 
@@ -493,6 +495,7 @@ def _get_failing_on_tool_call(error: BaseException) -> Any:
             return _MINIMAL_SPEC
         raise error
     return MagicMock(side_effect=_get)
+
 
 class TestMainLoopInitialize:
     def test_initialize_returns_protocol_version(self):
@@ -623,7 +626,7 @@ class TestMainLoopToolsList:
 class TestMainLoopToolsCall:
     def test_tools_call_dispatches_and_returns_result(self):
         # The server is asked for its identity and its spec before the call itself goes out.
-        get_mock = MagicMock(side_effect=lambda url: (
+        get_mock = MagicMock(side_effect=lambda url, timeout=None: (
             {"started_at": "2026-08-30T07:00:00Z"} if url.endswith("/health")
             else _MINIMAL_SPEC if url.endswith("/openapi.json")
             else {"status": "ok"}
@@ -700,6 +703,20 @@ class TestMainLoopToolsCall:
         assert r["result"]["isError"] is True
         assert "502" in r["result"]["content"][0]["text"]
 
+    def test_tools_call_timeout_does_not_blame_the_connection(self):
+        # The server is up and still working; telling the agent to check whether it is running
+        # argues against the one thing it should do, which is wait and look.
+        responses = _run_main_with_inputs(
+            {"jsonrpc": "2.0", "id": 8, "method": "tools/call",
+             "params": {"name": "list_scripts", "arguments": {}}},
+            get_mock=_get_failing_on_tool_call(socket.timeout("timed out")),
+        )
+        text = responses[0]["result"]["content"][0]["text"]
+        assert responses[0]["result"]["isError"] is True
+        assert "did not return within" in text
+        assert "still running" in text
+        assert "Cannot reach" not in text
+
     def test_tools_call_connection_error_returns_is_error(self):
         responses = _run_main_with_inputs(
             {"jsonrpc": "2.0", "id": 9, "method": "tools/call",
@@ -775,6 +792,93 @@ class TestMainLoopMiscMethods:
 
         assert len(captured) == 1
         assert json.loads(captured[0])["result"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Tool annotations (MCP behaviour hints)
+# ---------------------------------------------------------------------------
+
+class TestAnnotations:
+    def _annotations(self, tool: str) -> dict:
+        entry = bridge._index(_MINIMAL_SPEC)[tool]
+        return bridge._annotations(entry["op"], entry["method"])
+
+    def test_a_get_is_read_only(self):
+        assert self._annotations("list_scripts") == {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+
+    def test_a_post_is_assumed_to_write_and_to_destroy(self):
+        a = self._annotations("rename_function")
+        assert a["readOnlyHint"] is False
+        assert a["destructiveHint"] is True
+
+    def test_the_world_is_closed_unless_a_tool_says_otherwise(self):
+        # MCP defaults openWorldHint to true; this surface is bounded by the Ghidra project,
+        # so the honest default is the opposite one.
+        assert self._annotations("rename_function")["openWorldHint"] is False
+
+    def test_the_spec_overrides_every_derived_default(self):
+        op = {"operationId": "t", "x-mcp": {
+            "destructive": False, "idempotent": True, "open_world": True}}
+        assert bridge._annotations(op, "post") == {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+
+    def test_every_listed_tool_carries_annotations(self):
+        for tool in bridge._openapi_to_mcp_tools(_MINIMAL_SPEC):
+            assert set(tool["annotations"]) == {
+                "readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"}
+
+    def test_describe_tool_reports_them_for_a_deferred_tool(self):
+        described = bridge._dispatch(
+            _MINIMAL_SPEC, "http://host", "describe_tool", {"tool_name": "rename_function"})
+        assert described["annotations"]["readOnlyHint"] is False
+
+
+# ---------------------------------------------------------------------------
+# Per-tool timeouts
+# ---------------------------------------------------------------------------
+
+class TestTimeout:
+    def test_defaults_come_from_the_method(self):
+        assert bridge._timeout({}, "get") == bridge.DEFAULT_GET_TIMEOUT
+        assert bridge._timeout({}, "post") == bridge.DEFAULT_POST_TIMEOUT
+
+    def test_a_slow_tool_declares_its_own(self):
+        assert bridge._timeout({"x-mcp": {"timeout_seconds": 1800}}, "post") == 1800
+
+    def test_the_declared_timeout_reaches_the_request(self):
+        spec = json.loads(json.dumps(_MINIMAL_SPEC))
+        spec["paths"]["/rename_function"]["post"]["x-mcp"] = {"timeout_seconds": 900}
+        with patch.object(bridge, "_post", return_value={}) as mock_post:
+            bridge._dispatch(spec, "http://host", "rename_function",
+                             {"program": "p", "name_or_address": "f", "new_name": "g"})
+        assert mock_post.call_args[0][2] == 900
+
+    def test_a_timeout_is_reported_as_one(self):
+        with patch.object(bridge, "_get", side_effect=socket.timeout("timed out")):
+            with pytest.raises(bridge.ToolTimeout) as excinfo:
+                bridge._dispatch(_MINIMAL_SPEC, "http://host", "list_scripts", {})
+        assert excinfo.value.tool == "list_scripts"
+        assert excinfo.value.seconds == bridge.DEFAULT_GET_TIMEOUT
+
+    def test_a_slow_connect_is_a_timeout_too(self):
+        wrapped = urllib.error.URLError(socket.timeout("timed out"))
+        with patch.object(bridge, "_get", side_effect=wrapped):
+            with pytest.raises(bridge.ToolTimeout):
+                bridge._dispatch(_MINIMAL_SPEC, "http://host", "list_scripts", {})
+
+    def test_a_refused_connection_is_not_a_timeout(self):
+        with patch.object(bridge, "_get", side_effect=urllib.error.URLError("refused")):
+            with pytest.raises(urllib.error.URLError):
+                bridge._dispatch(_MINIMAL_SPEC, "http://host", "list_scripts", {})
 
 
 # ---------------------------------------------------------------------------
