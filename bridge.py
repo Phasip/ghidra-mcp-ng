@@ -41,9 +41,27 @@ import argparse
 import datetime
 from typing import Any
 
-PROTOCOL_VERSION = "2024-11-05"
+# Newest first. The client names the version it wants and gets it back when it is in this list,
+# which is what the spec requires; anything else is answered with the newest we speak and the
+# client decides whether to continue. 2025-06-18 is the first revision with tool annotations, the
+# reason to be on it at all.
+SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
+PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[0]
 SERVER_NAME = "ghidra-mcp-ng"
 SERVER_VERSION = "0.1.0"
+
+# Sent once at initialize. This is the orientation a host gets for free, whatever it is — the
+# facts that are true of every tool here and would otherwise have to be rediscovered per session.
+INSTRUCTIONS = (
+    "Ghidra reverse-engineering tools, driven against an open Ghidra project.\n"
+    "Every tool that touches a binary takes 'program' — a name from list_project_files. A "
+    "function, symbol or address is always passed as 'name_or_address', accepting an exact "
+    "(case-sensitive) name or a 0x-prefixed hex address.\n"
+    "Only the most-used tools are listed directly; the rest are reached with list_tools -> "
+    "describe_tool -> call_tool.\n"
+    "Errors name the offending value and the tool to call next — read one and correct it rather "
+    "than retrying the same call."
+)
 
 # structuredContent (2025-06-18) is deliberately not used: the spec asks a tool that returns it to
 # repeat the same JSON in a text block, which doubles the cost of every response for a surface
@@ -574,13 +592,19 @@ def _run_loop(base: str, log) -> None:
         params = req.get("params") or {}
 
         if method == "initialize":
+            # Echo the client's version when we speak it, otherwise answer with the newest we do
+            # and let the client decide — the negotiation the spec asks for, rather than
+            # announcing one fixed version at everybody.
+            requested = params.get("protocolVersion")
+            agreed = requested if requested in SUPPORTED_PROTOCOL_VERSIONS else PROTOCOL_VERSION
             resp = _ok(id_, {
-                "protocolVersion": PROTOCOL_VERSION,
+                "protocolVersion": agreed,
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+                "instructions": INSTRUCTIONS,
             })
             _send(resp)
-            log("SEND", json.dumps(resp))
+            log("SEND", f"initialize → protocol {agreed} (client asked for {requested})")
 
         elif method == "tools/list":
             try:

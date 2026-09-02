@@ -518,6 +518,29 @@ class TestMainLoopInitialize:
         )
         assert "tools" in responses[0]["result"]["capabilities"]
 
+    def test_initialize_echoes_a_version_the_bridge_speaks(self):
+        for version in bridge.SUPPORTED_PROTOCOL_VERSIONS:
+            responses = _run_main_with_inputs(
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"protocolVersion": version}}
+            )
+            assert responses[0]["result"]["protocolVersion"] == version
+
+    def test_initialize_answers_an_unknown_version_with_the_newest_one(self):
+        responses = _run_main_with_inputs(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"protocolVersion": "2099-01-01"}}
+        )
+        assert responses[0]["result"]["protocolVersion"] == bridge.PROTOCOL_VERSION
+
+    def test_initialize_carries_the_orientation_a_host_needs(self):
+        responses = _run_main_with_inputs(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+        )
+        instructions = responses[0]["result"]["instructions"]
+        assert "list_project_files" in instructions
+        assert "name_or_address" in instructions
+
 
 class TestSpecCache:
     """The cached schema must follow the server process it was generated from."""
