@@ -88,6 +88,9 @@ src/main/java/com/ghidramcpng/
                            UnknownQueryParamFilter (rejects undeclared query params), MetaResource
                            (/health, /schema, /openapi.json).
     ApiSupport.java        JSON envelope helpers: ok(result) / error(status, msg) → {"ok":bool,...}.
+    McpToolHints.java      Per-tool behaviour hints published as an "x-mcp" OpenAPI extension:
+                           which writes are additive, which repeat harmlessly, which reach past
+                           the project, and which outlast the bridge's default timeout.
   program/
     ProgramManager.java    Lazy open+cache (getOrOpen), auto-analysis, import, and withTransaction(...).
   rules/
@@ -109,7 +112,7 @@ rules.yaml                 Naming-convention + timeout config (optional at runti
 TOOLS.md                   GENERATED tool reference — do not hand-edit; regenerate from the spec.
 tests/                     Python: conftest.py (live-server fixture), test_integration.py (live),
                            test_bridge.py (offline). src/test/java: ToolResourceIntegrationTest,
-                           RulesEngineTest.
+                           RulesEngineTest, McpToolHintsTest.
 ```
 
 The MCP tool count is derived by reflection (`ToolHelpers.countEndpoints`), so it stays in
@@ -174,6 +177,15 @@ public RenameFunctionResponse renameFunction(
 Request/response DTOs are **Java records** with **snake_case component names** (they become
 JSON keys). Add `@Schema(description=...)` for docs. `Address` fields serialize to
 `"0x..."` automatically via `GsonProvider`.
+
+**Behaviour hints.** `bridge.py` derives the MCP tool annotations a host uses to decide what it
+may run unattended — `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint` — plus
+its HTTP timeout, from the request method: a GET reads, never destroys, and repeats harmlessly; a
+POST does none of those. Add an entry to `McpToolHints.java` only when the new tool contradicts
+that: it writes but only ever *adds*, repeating it is a no-op, it reads a host path or runs host
+code, or it can run longer than two minutes. `McpToolHintsTest` fails if an entry names a tool
+that no longer exists, and `TOOLS.md` prints the result under each tool, so a wrong hint is
+visible in the diff.
 
 ## Coding standards
 
@@ -279,6 +291,10 @@ nothing and costs about four seconds on every invocation.
   conventions (consistency principle).
 - It carries a `tags` category, and you left `HOT_CORE` in `bridge.py` alone unless the tool
   clears the first-ten-minutes bar (context-budget principle).
+- Its behaviour line in `TOOLS.md` is true — add a `McpToolHints.java` entry if the
+  method-derived default gets it wrong (see "Behaviour hints" above). A tool that can outlast
+  two minutes MUST declare a timeout, or the bridge will cut it off and tell the agent the
+  server is unreachable.
 - The tool compiles and its OpenAPI schema is populated (POST tools need the `@RequestBody`
   + request record).
 - Integration test(s) in `tests/test_integration.py` cover the happy path AND the error

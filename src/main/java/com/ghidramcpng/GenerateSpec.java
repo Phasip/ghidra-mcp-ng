@@ -1,5 +1,6 @@
 package com.ghidramcpng;
 
+import com.ghidramcpng.mcp.McpToolHints;
 import com.ghidramcpng.tools.ReadTools;
 import com.ghidramcpng.tools.ScriptTool;
 import com.ghidramcpng.tools.WriteTools;
@@ -33,6 +34,7 @@ public class GenerateSpec {
 
         OpenAPI spec = new Reader(base)
                 .read(Set.of(ReadTools.class, WriteTools.class, ScriptTool.class));
+        McpToolHints.apply(spec);
 
         String json = Json.mapper()
                 .writerWithDefaultPrettyPrinter()

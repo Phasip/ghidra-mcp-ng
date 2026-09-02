@@ -49,6 +49,25 @@ def _schema_type(spec: dict, schema: dict) -> str:
     return t or "any"
 
 
+def _behaviour(op: dict, method: str) -> str:
+    """One line of what the tool does to the program, from the same facts bridge.py publishes
+    as MCP tool annotations (McpToolHints.java plus the method-derived defaults). Rendering it
+    here is what makes a change to those defaults visible in a diff."""
+    hints = op.get("x-mcp") or {}
+    if method == "get":
+        notes = ["Reads only"]
+    else:
+        notes = ["Writes, additively" if hints.get("destructive") is False else "Writes, destructively"]
+        if hints.get("idempotent"):
+            notes.append("repeating it changes nothing further")
+    if hints.get("open_world"):
+        notes.append("reaches outside the Ghidra project")
+    seconds = hints.get("timeout_seconds")
+    if seconds:
+        notes.append(f"may run for up to {seconds // 60} minutes")
+    return "*" + "; ".join(notes) + ".*"
+
+
 def _categorize(op: dict) -> str:
     tags = op.get("tags") or []
     return tags[0] if tags else UNCATEGORIZED
@@ -110,6 +129,7 @@ def _collect_operations(spec: dict) -> list[dict]:
                 "method": method.upper(),
                 "path": path,
                 "summary": summary,
+                "behaviour": _behaviour(op, method),
                 "category": _categorize(op),
                 "params": params or body_fields,
             })
@@ -159,6 +179,7 @@ def generate(spec: dict) -> str:
             lines += [f"### `{op['op_id']}`", ""]
             if op["summary"]:
                 lines += [op["summary"], ""]
+            lines += [op["behaviour"], ""]
             table = _param_table(op["params"])
             if table:
                 lines += [table, ""]

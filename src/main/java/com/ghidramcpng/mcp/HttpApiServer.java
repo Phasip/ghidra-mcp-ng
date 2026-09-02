@@ -200,6 +200,7 @@ public class HttpApiServer {
                             "OpenAPI context is not initialized");
                 }
                 OpenAPI openApi = context.read();
+                McpToolHints.apply(openApi);
                 return Response.ok(Json.pretty(openApi), MediaType.APPLICATION_JSON).build();
             } catch (Exception e) {
                 return ApiSupport.error(Response.Status.INTERNAL_SERVER_ERROR,
