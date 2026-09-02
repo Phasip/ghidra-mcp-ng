@@ -125,6 +125,10 @@ Every response carries the same envelope: `{"ok":true,"result":{…}}` on succes
 also carries an `error_id` that appears next to the full stack trace in `log_file`. An unknown tool
 name is a 404 that names the closest real tool.
 
+The envelope is for HTTP callers. `bridge.py` strips it before the result reaches an MCP client:
+success is already carried by the absence of `isError`, and a failure is delivered as the server's
+own message with nothing prefixed to it.
+
 ---
 
 ## Server config (`rules.yaml`)

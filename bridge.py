@@ -45,6 +45,11 @@ PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "ghidra-mcp-ng"
 SERVER_VERSION = "0.1.0"
 
+# structuredContent (2025-06-18) is deliberately not used: the spec asks a tool that returns it to
+# repeat the same JSON in a text block, which doubles the cost of every response for a surface
+# whose whole design is about spending context carefully. Revisit if hosts start suppressing the
+# text duplicate.
+
 # Tools listed natively, with full schemas, in every session. These are the ones a
 # session reaches for constantly, where a discovery round trip would be pure overhead.
 # Everything else is discoverable via list_tools/describe_tool and callable via
@@ -109,6 +114,46 @@ def _tool_result(id_: Any, text: str, *, is_error: bool = False) -> dict:
     if is_error:
         result["isError"] = True
     return _ok(id_, result)
+
+
+def _render_result(payload: Any) -> str:
+    """Render a tool's HTTP response as the text the agent reads.
+
+    Two things happen here. The {"ok": true, "result": ...} envelope is dropped: MCP already
+    carries success in isError, and repeating it spends tokens on every single call. And any
+    multi-line string is lifted out of the JSON and printed as itself — decompiled C and script
+    output *are* the answer for the tools that return them, and a JSON-escaped one-liner is both
+    bigger and harder to read than the text it encodes.
+    """
+    if isinstance(payload, dict) and payload.get("ok") is True and "result" in payload:
+        payload = payload["result"]
+    if not isinstance(payload, dict):
+        return json.dumps(payload, separators=(",", ":"))
+
+    text_fields = {k: v for k, v in payload.items() if isinstance(v, str) and "\n" in v}
+    if not text_fields:
+        return json.dumps(payload, separators=(",", ":"))
+
+    rest = {k: v for k, v in payload.items() if k not in text_fields}
+    parts = [json.dumps(rest, separators=(",", ":"))] if rest else []
+    parts.extend(f"{key}:\n{value.rstrip()}" for key, value in text_fields.items())
+    return "\n\n".join(parts)
+
+
+def _error_text(status: int, body: str, reason: str) -> str:
+    """Surface the server's own message rather than talking over it.
+
+    Every 4xx from this server carries a diagnosis that already names the offending value and
+    the tool to call next. Prefixing that with a guess at what might be wrong buries the answer
+    under the noise it was written to replace.
+    """
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError):
+        parsed = None
+    if isinstance(parsed, dict) and isinstance(parsed.get("error"), str):
+        return parsed["error"]
+    return f"HTTP {status}: {body.strip() or reason}"
 
 
 # ---------------------------------------------------------------------------
@@ -561,7 +606,7 @@ def _run_loop(base: str, log) -> None:
             arguments = params.get("arguments") or {}
             try:
                 http_resp = _dispatch(get_spec(), base, name, arguments)
-                resp = _tool_result(id_, json.dumps(http_resp, indent=2))
+                resp = _tool_result(id_, _render_result(http_resp))
                 _send(resp)
                 log("CALL", f"{name} → ok")
             except ValueError as e:
@@ -570,12 +615,7 @@ def _run_loop(base: str, log) -> None:
                 log("CALL", f"{name} → ValueError: {e}")
             except urllib.error.HTTPError as e:
                 body = e.read().decode() if hasattr(e, "read") else ""
-                hint = {
-                    400: " (bad parameters — check required fields and types)",
-                    404: " (endpoint not found — check tool name or server version)",
-                    500: " (Ghidra server error — check server logs)",
-                }.get(e.code, "")
-                msg = f"HTTP {e.code}{hint}: {body or e.reason}"
+                msg = _error_text(e.code, body, e.reason)
                 resp = _tool_result(id_, msg, is_error=True)
                 _send(resp)
                 log("CALL", f"{name} → {msg}")

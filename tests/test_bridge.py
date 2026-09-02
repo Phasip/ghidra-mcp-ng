@@ -480,6 +480,20 @@ def _run_main_with_inputs(*messages: dict, get_mock: Any = None, post_mock: Any 
     return [json.loads(line) for line in captured]
 
 
+def _get_failing_on_tool_call(error: BaseException) -> Any:
+    """A _get that serves /health and /openapi.json, then fails the tool call itself.
+
+    A plain side_effect list would spend its failure on the schema fetch instead, which is a
+    different code path with a different error message.
+    """
+    def _get(url: str, timeout: int = 0) -> Any:
+        if url.endswith("/health"):
+            return {"started_at": "2026-08-30T07:00:00Z"}
+        if url.endswith("/openapi.json"):
+            return _MINIMAL_SPEC
+        raise error
+    return MagicMock(side_effect=_get)
+
 class TestMainLoopInitialize:
     def test_initialize_returns_protocol_version(self):
         responses = _run_main_with_inputs(
@@ -618,13 +632,20 @@ class TestMainLoopToolsCall:
         assert r["result"]["isError"] is True
         assert "Unknown tool" in r["result"]["content"][0]["text"]
 
-    def test_tools_call_http_400_returns_is_error_with_hint(self):
+    def test_tools_call_http_error_surfaces_the_servers_own_message(self):
+        # The server already diagnosed this; the bridge must not bury it under a status line
+        # and a guess about what might be wrong.
+        body = json.dumps({
+            "ok": False,
+            "error": "Unknown query parameter 'address_or_name' for endpoint "
+                     "'POST /tool/rename_function'. Valid fields: program, name_or_address, new_name.",
+        }).encode()
         http_err = urllib.error.HTTPError(
             url="http://testhost/rename_function",
             code=400,
             msg="Bad Request",
             hdrs=MagicMock(),
-            fp=io.BytesIO(b"Required parameter 'program' is missing"),
+            fp=io.BytesIO(body),
         )
         responses = _run_main_with_inputs(
             {"jsonrpc": "2.0", "id": 7, "method": "tools/call",
@@ -635,35 +656,32 @@ class TestMainLoopToolsCall:
         r = responses[0]
         assert r["result"]["isError"] is True
         text = r["result"]["content"][0]["text"]
-        assert "400" in text
-        assert "bad parameters" in text
+        assert text.startswith("Unknown query parameter 'address_or_name'")
+        assert "400" not in text
+        assert '"ok"' not in text
 
-    def test_tools_call_http_500_returns_is_error_with_hint(self):
+    def test_tools_call_http_error_without_a_json_body_keeps_the_status(self):
         http_err = urllib.error.HTTPError(
             url="http://testhost/list_scripts",
-            code=500,
-            msg="Internal Server Error",
+            code=502,
+            msg="Bad Gateway",
             hdrs=MagicMock(),
-            fp=io.BytesIO(b"NullPointerException"),
+            fp=io.BytesIO(b"<html>proxy exploded</html>"),
         )
-        get_mock = MagicMock(side_effect=[_MINIMAL_SPEC, http_err])
         responses = _run_main_with_inputs(
             {"jsonrpc": "2.0", "id": 8, "method": "tools/call",
              "params": {"name": "list_scripts", "arguments": {}}},
-            get_mock=get_mock,
+            get_mock=_get_failing_on_tool_call(http_err),
         )
         r = responses[0]
         assert r["result"]["isError"] is True
-        assert "500" in r["result"]["content"][0]["text"]
-        assert "server error" in r["result"]["content"][0]["text"]
+        assert "502" in r["result"]["content"][0]["text"]
 
     def test_tools_call_connection_error_returns_is_error(self):
-        url_err = urllib.error.URLError("Connection refused")
-        get_mock = MagicMock(side_effect=[_MINIMAL_SPEC, url_err])
         responses = _run_main_with_inputs(
             {"jsonrpc": "2.0", "id": 9, "method": "tools/call",
              "params": {"name": "list_scripts", "arguments": {}}},
-            get_mock=get_mock,
+            get_mock=_get_failing_on_tool_call(urllib.error.URLError("Connection refused")),
         )
         r = responses[0]
         assert r["result"]["isError"] is True
@@ -796,3 +814,51 @@ class TestNestedSchema:
         # batch_tool_call's 'calls' really is free-form; nothing to recurse into
         entry = bridge._prop_schema({}, {"type": "array", "items": {"type": "object"}})
         assert entry["items"] == {"type": "object"}
+
+
+# ---------------------------------------------------------------------------
+# Result rendering
+# ---------------------------------------------------------------------------
+
+class TestRenderResult:
+    def test_the_ok_envelope_is_dropped(self):
+        assert bridge._render_result({"ok": True, "result": {"count": 2}}) == '{"count":2}'
+
+    def test_json_is_compact(self):
+        rendered = bridge._render_result({"ok": True, "result": {"a": 1, "b": [1, 2]}})
+        assert rendered == '{"a":1,"b":[1,2]}'
+
+    def test_multi_line_text_is_printed_as_text(self):
+        rendered = bridge._render_result({"ok": True, "result": {
+            "name": "main", "decompiled": "int main(void)\n{\n  return 0;\n}\n"}})
+        assert rendered == '{"name":"main"}\n\ndecompiled:\nint main(void)\n{\n  return 0;\n}'
+        assert "\\n" not in rendered
+
+    def test_a_single_line_string_stays_in_the_json(self):
+        rendered = bridge._render_result({"ok": True, "result": {"output": "done"}})
+        assert rendered == '{"output":"done"}'
+
+    def test_an_unenveloped_payload_is_left_alone(self):
+        assert bridge._render_result([1, 2]) == "[1,2]"
+
+    def test_a_failed_batch_item_keeps_its_own_ok_flag(self):
+        rendered = bridge._render_result(
+            {"ok": True, "result": {"results": [{"ok": False, "error": "nope"}]}})
+        assert rendered == '{"results":[{"ok":false,"error":"nope"}]}'
+
+
+# ---------------------------------------------------------------------------
+# Error text
+# ---------------------------------------------------------------------------
+
+class TestErrorText:
+    def test_the_servers_message_is_used_verbatim(self):
+        body = json.dumps({"ok": False, "error": "Unknown data type 'uint32'. Did you mean 'uint'?"})
+        assert bridge._error_text(400, body, "Bad Request") == \
+            "Unknown data type 'uint32'. Did you mean 'uint'?"
+
+    def test_a_non_json_body_falls_back_to_the_status(self):
+        assert bridge._error_text(502, "<html>", "Bad Gateway") == "HTTP 502: <html>"
+
+    def test_an_empty_body_falls_back_to_the_reason(self):
+        assert bridge._error_text(503, "", "Service Unavailable") == "HTTP 503: Service Unavailable"
