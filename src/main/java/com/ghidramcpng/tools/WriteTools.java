@@ -147,7 +147,7 @@ public class WriteTools {
         Program program = openProgram(programName);
         Function func = findFunction(program, funcRef);
         DataType dataType = typeName != null
-                ? findOrCreateDataType(program, typeName, newName, "new_name")
+                ? findOrCreateDataType(program, typeName)
                 : null;
 
         // A storage identity names the value itself, so it survives the renumbering that a name
@@ -249,7 +249,7 @@ public class WriteTools {
                         "'" + nameOrAddress + "' is an external import with no memory-backed storage " +
                         "to retype. Only 'new_name' can be set on an import.");
             }
-            dataType = findOrCreateDataType(program, typeName, newName, "new_name");
+            dataType = findOrCreateDataType(program, typeName);
         }
         DataType finalDataType = dataType;
 
@@ -339,12 +339,11 @@ public class WriteTools {
             String paramName = requireMaxLength(requireParameterText(parameter, i, "name"), "name", MAX_NAME_LENGTH);
             String paramType = requireParameterText(parameter, i, "type_name");
             rules.validate("variable_name", paramName);
-            DataType dataType = findOrCreateDataType(program, paramType, paramName, "name");
+            DataType dataType = findOrCreateDataType(program, paramType);
             params.add(createParameter(paramName, dataType, program));
         }
 
-        // A return type is the one slot no tool names, so a declarator cannot be minted here.
-        DataType returnType = findOrCreateDataType(program, returnTypeName, null, null);
+        DataType returnType = findOrCreateDataType(program, returnTypeName);
         runTransaction(program, "Set prototype: " + funcRef, () -> {
             Function func = findFunction(program, funcRef);
             ReturnParameterImpl returnParam = new ReturnParameterImpl(returnType, program);
@@ -387,7 +386,7 @@ public class WriteTools {
         }
 
         Program program = openProgram(programName);
-        DataType dataType = findOrCreateDataType(program, typeName, newName, "new_name");
+        DataType dataType = findOrCreateDataType(program, typeName);
         runTransaction(program, "Set param type: " + funcRef + "[" + parameterIndex + "]", () -> {
             Function func = findFunction(program, funcRef);
             Parameter[] params = func.getParameters();
@@ -503,8 +502,9 @@ public class WriteTools {
         rules.validate("struct_field_name", fieldName);
 
         Program program = openProgram(programName);
-        DataType fieldType = findOrCreateDataType(program, typeName, fieldName, "field_name");
+        DataType fieldType = findOrCreateDataType(program, typeName);
         final int[] ordinalOut = {-1};
+        final String[] appliedType = {null};
         final int requestedOffsetFinal = requestedOffset;
         runTransaction(program, "Add field: " + structName + "." + fieldName, () -> {
             Structure struct = requireStructure(program, structName);
@@ -546,9 +546,10 @@ public class WriteTools {
             }
             DataTypeComponent comp = struct.replaceAtOffset(targetOffset, fieldType, fieldLength, fieldName, comment);
             ordinalOut[0] = comp.getOrdinal();
+            appliedType[0] = comp.getDataType().getName();
         });
 
-        return recorded(new AddStructFieldResponse(structName, fieldName, ordinalOut[0]));
+        return recorded(new AddStructFieldResponse(structName, fieldName, ordinalOut[0], appliedType[0]));
     }
 
     @POST
@@ -603,10 +604,10 @@ public class WriteTools {
         if (comment != null) requireMaxLength(comment, "comment", MAX_COMMENT_LENGTH);
 
         Program program = openProgram(programName);
-        DataType replacementType = findOrCreateDataType(
-                program, typeName, newName != null ? newName : fieldName, "field_name");
+        DataType replacementType = findOrCreateDataType(program, typeName);
         final int[] ordinalOut = {-1};
         final String[] resolvedName = {fieldName};
+        final String[] appliedType = {null};
         runTransaction(program, "Replace field in: " + structName, () -> {
             Structure struct = requireStructure(program, structName);
             ensureStableStructLayout(struct, structName, "replace_struct_field");
@@ -635,9 +636,10 @@ public class WriteTools {
                     comment != null ? comment : target.getComment());
             ordinalOut[0] = replaced.getOrdinal();
             resolvedName[0] = finalFieldName;
+            appliedType[0] = replaced.getDataType().getName();
         });
 
-        return recorded(new ReplaceStructFieldResponse(structName, resolvedName[0], ordinalOut[0], typeName));
+        return recorded(new ReplaceStructFieldResponse(structName, resolvedName[0], ordinalOut[0], appliedType[0]));
     }
 
     @POST
@@ -1364,14 +1366,14 @@ public class WriteTools {
             String name_or_storage,
             @Schema(description = "New variable name (max 256 chars); omit to keep the current one.")
             String new_name,
-            @Schema(description = "Data type to assign, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int), which is named after new_name; omit to keep the current one.")
+            @Schema(description = "Data type to assign, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int); omit to keep the current one.")
             String type_name) {
     }
 
     public record PrototypeParameterRequest(
             @Schema(description = "Parameter name (max 256 chars)", requiredMode = Schema.RequiredMode.REQUIRED)
             String name,
-            @Schema(description = "Data type to assign, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int), which is named after this parameter", requiredMode = Schema.RequiredMode.REQUIRED)
+            @Schema(description = "Data type to assign, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int)", requiredMode = Schema.RequiredMode.REQUIRED)
             String type_name) {
     }
 
@@ -1380,7 +1382,7 @@ public class WriteTools {
             String program,
             @Schema(description = "Function name or hex address", requiredMode = Schema.RequiredMode.REQUIRED)
             String name_or_address,
-            @Schema(description = "Data type to return, e.g. int, char *, MyStruct *", requiredMode = Schema.RequiredMode.REQUIRED)
+            @Schema(description = "Data type to return, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int)", requiredMode = Schema.RequiredMode.REQUIRED)
             String return_type_name,
             @Schema(description = "Ordered parameter list; each entry is {name, type_name}. Replaces the function's existing parameters — omit or pass an empty array for a no-argument function.")
             List<PrototypeParameterRequest> parameters,
@@ -1395,7 +1397,7 @@ public class WriteTools {
             String name_or_address,
             @Schema(description = "0-based parameter index", requiredMode = Schema.RequiredMode.REQUIRED)
             Integer parameter_index,
-            @Schema(description = "Data type to assign, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int), which is named after new_name", requiredMode = Schema.RequiredMode.REQUIRED)
+            @Schema(description = "Data type to assign, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int)", requiredMode = Schema.RequiredMode.REQUIRED)
             String type_name,
             @Schema(description = "Optional new parameter name (max 256 chars)")
             String new_name) {
@@ -1421,7 +1423,7 @@ public class WriteTools {
             String struct_name,
             @Schema(description = "Field name (max 256 chars)", requiredMode = Schema.RequiredMode.REQUIRED)
             String field_name,
-            @Schema(description = "Field data type, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int), which is named after field_name", requiredMode = Schema.RequiredMode.REQUIRED)
+            @Schema(description = "Field data type, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int)", requiredMode = Schema.RequiredMode.REQUIRED)
             String type_name,
             @Schema(description = "Optional field comment (max 4096 chars)")
             String comment,
@@ -1450,7 +1452,7 @@ public class WriteTools {
             String struct_name,
             @Schema(description = "Field name to replace", requiredMode = Schema.RequiredMode.REQUIRED)
             String field_name,
-            @Schema(description = "Replacement field data type, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int), which is named after the field", requiredMode = Schema.RequiredMode.REQUIRED)
+            @Schema(description = "Replacement field data type, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int)", requiredMode = Schema.RequiredMode.REQUIRED)
             String type_name,
             @Schema(description = "Optional replacement field name (max 256 chars)")
             String new_name,
@@ -1485,7 +1487,7 @@ public class WriteTools {
             String name_or_address,
             @Schema(description = "New symbol name (max 256 chars); omit to keep the current one.")
             String new_name,
-            @Schema(description = "Data type to assign, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int), which is named after new_name; omit to keep the current one. Not valid on an external import.")
+            @Schema(description = "Data type to assign, e.g. int, char *, MyStruct *, or a callback declarator int (*)(void *, int); omit to keep the current one. Not valid on an external import.")
             String type_name) {
     }
 
@@ -1516,7 +1518,7 @@ public class WriteTools {
     }
 
     public record AddStructFieldResponse(String struct,
-            String field_name, int ordinal) {
+            String field_name, int ordinal, String type_name) {
     }
 
     public record RemoveStructFieldResponse(String struct,

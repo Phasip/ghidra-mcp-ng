@@ -241,9 +241,9 @@ Struct workflow notes:
 
 Callback types:
 
-- Every `type_name` also accepts a C function-pointer declarator — `int (*)(void *dst, int nbytes)` — which creates the function-definition type and applies a pointer to it. An optional calling convention goes where C puts it: `int (__stdcall *)(int)`.
-- The declarator carries no name: the type takes the name the same call gives the thing it types (`new_name`, `field_name`, or a parameter's `name`), so nothing is spelled twice and the callback reaches the next parameter, struct field or vtable slot as `<that name> *`. A call that names nothing is refused, and so is `return_type_name` — a return type has no name of its own, so apply the callback somewhere named first.
-- A name that already exists is reused when the signature matches and refused when it does not — an applied definition is never redefined out from under the sites already typed with it.
+- Every `type_name` also accepts a C function-pointer declarator — `int (*)(void *dst, int nbytes)` — which creates the function-definition type and applies a pointer to it. An optional calling convention goes where C puts it: `int (__stdcall *)(int)`. `return_type_name` takes one too.
+- Ghidra has no anonymous function definition, so applying a signature always creates one. An unnamed declarator names it after its own signature, in `/functions`: `int (*)(int a, int b)` becomes `func_int__int_int`, and the callback reaches the next parameter, struct field or vtable slot as `func_int__int_int *`. Writing the same signature anywhere else finds that same type, and two different signatures can never want the same name.
+- To choose the name yourself, write it where C writes it — `int (*maybe_readCb)(void *dst, int nbytes)` — and the definition is called `maybe_readCb`. That name is refused, not redefined, if the program already has something else by it: every site already typed with the definition would change with it.
 - This matters because an untyped function pointer leaves the decompiler inferring each indirect call's arity from the pushes at that call site, so one callback comes out with a different signature at every site. One applied type fixes them all.
 
 Omit `--rules` to disable all naming rules and use the built-in default timeouts.

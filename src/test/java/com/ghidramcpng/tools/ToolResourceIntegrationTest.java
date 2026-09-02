@@ -350,9 +350,9 @@ class ToolResourceIntegrationTest {
     }
 
     @Test
-    void functionPointerDeclarator_takesTheNameOfTheThingItIsAppliedTo() throws Exception {
-        // The declarator mints a data type, and the name it gets is the one the same call gives
-        // the field — so the field's naming rule gates it, and nothing has to be spelled twice.
+    void functionPointerDeclarator_namesTheTypeItselfNotTheFieldItTypes() throws Exception {
+        // A declarator always mints a data type, since Ghidra has no anonymous function
+        // definition. The name it gets is its own — the field's naming rule gates the field.
         RuledTools tools = toolsWithRules(
                 "naming:\n"
                 + "  struct_field_name:\n"
@@ -376,16 +376,23 @@ class ToolResourceIntegrationTest {
                 "program", programName,
                 "struct_name", "CallbackRuleStruct",
                 "field_name", "maybe_read_0x0",
-                // A name written where C puts the variable's is parsed and discarded.
-                "type_name", "int (*ignoredName)(int)")));
+                // C writes the name inside those parentheses; here it names the type.
+                "type_name", "int (*writtenName)(int)")));
+        assertDoesNotThrow(() -> tools.write().addStructField(json(
+                "program", programName,
+                "struct_name", "CallbackRuleStruct",
+                "field_name", "maybe_write_0x8",
+                "type_name", "void (*)(char *)")));
 
         var types = tools.read().searchDataTypes(programName, "", 500).data_types().stream()
                 .map(com.ghidramcpng.model.DataTypeEntry::name)
                 .toList();
-        assertTrue(types.contains("maybe_read_0x0"),
-                "The definition takes the field's name. Got: " + types);
-        assertFalse(types.contains("ignoredName"),
-                "The name in the declarator must not reach the data type manager. Got: " + types);
+        assertTrue(types.contains("writtenName"),
+                "A written name is the definition's name. Got: " + types);
+        assertTrue(types.contains("func_void__char_ptr"),
+                "An unnamed declarator is named after its signature. Got: " + types);
+        assertFalse(types.contains("maybe_read_0x0"),
+                "The field's name must not become a data type name. Got: " + types);
     }
 
     @Test

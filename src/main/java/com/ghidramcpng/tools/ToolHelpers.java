@@ -18,6 +18,7 @@ import ghidra.program.model.data.FunctionDefinitionDataType;
 import ghidra.program.model.data.ParameterDefinition;
 import ghidra.program.model.data.ParameterDefinitionImpl;
 import ghidra.program.model.data.PointerDataType;
+import ghidra.program.model.lang.CompilerSpec;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.symbol.Symbol;
@@ -479,20 +480,32 @@ public final class ToolHelpers {
     }
 
     /**
-     * A C function-pointer declarator: a return type, a parenthesised {@code *} with an optional
-     * calling convention, and a parameter list — {@code int (*)(void *dst, int nbytes)}.
+     * A C function-pointer declarator: a return type, a parenthesised {@code *} carrying an
+     * optional calling convention and an optional name, and a parameter list —
+     * {@code int (*)(void *dst, int nbytes)}.
      *
-     * <p>C puts the variable's name inside those parentheses. Every tool that applies a type
-     * already names the thing it is typing, so a name written there is parsed and discarded
-     * rather than being a second place to spell the same name.
+     * <p>The name C writes inside those parentheses names the callback <em>type</em>. It is
+     * optional here: written, the definition takes it; omitted, one is derived from the signature.
      */
     private static final java.util.regex.Pattern FUNCTION_POINTER = java.util.regex.Pattern.compile(
-            "(.+?)\\(\\s*(?:([A-Za-z_][A-Za-z0-9_]*)\\s+)?\\*\\s*(?:[A-Za-z_][A-Za-z0-9_]*)?\\s*\\)\\s*\\((.*)\\)",
+            "(.+?)\\(\\s*(?:([A-Za-z_][A-Za-z0-9_]*)\\s+)?\\*\\s*([A-Za-z_][A-Za-z0-9_]*)?\\s*\\)\\s*\\((.*)\\)",
             java.util.regex.Pattern.DOTALL);
 
     /** A parameter written as a type followed by a name, {@code void *dst} or {@code int nbytes}. */
     private static final java.util.regex.Pattern NAMED_PARAMETER =
             java.util.regex.Pattern.compile("(.*[\\s*])([A-Za-z_][A-Za-z0-9_]*)");
+
+    /** Where minted callback definitions live, clear of the program's own types. */
+    private static final CategoryPath CALLBACK_CATEGORY = new CategoryPath("/functions");
+
+    /** Leading word of every derived definition name. */
+    private static final String DERIVED_PREFIX = "func_";
+
+    /** Longest derived definition name before the parameter list is cut short. */
+    private static final int MAX_DERIVED_NAME = 96;
+
+    /** How far a derived name will step past unrelated types squatting it before giving up. */
+    private static final int MAX_DERIVED_ATTEMPTS = 64;
 
     /**
      * Resolves a type to apply: everything {@link #findDataType} resolves, plus a C
@@ -504,23 +517,15 @@ public final class ToolHelpers {
      * call's arity from the pushes at that call site, so one callback comes out with a
      * different signature at every site it is called from. One applied type fixes them all.
      *
-     * <p>The definition is named {@code definitionName} — the name the same call gives the
-     * variable, parameter or field — so the callback reaches the next site as
-     * {@code <that name> *}. It is returned unresolved, exactly as the pointer and array types
-     * built above are: Ghidra stores it in the program's data type manager when the caller
-     * applies it, inside the caller's own transaction.
-     *
-     * @param definitionName name this call gives the thing being typed, or null if it gives none
-     * @param nameField      request field that would carry that name, or null if this slot
-     *                       (a return type) has no name of its own
+     * <p>The result is returned unresolved, exactly as the pointer and array types built above
+     * are: Ghidra stores it in the program's data type manager when the caller applies it,
+     * inside the caller's own transaction.
      */
-    public static DataType findOrCreateDataType(Program program, String typeName,
-            String definitionName, String nameField) {
+    public static DataType findOrCreateDataType(Program program, String typeName) {
         if (typeName != null) {
             java.util.regex.Matcher declarator = FUNCTION_POINTER.matcher(typeName.trim());
             if (declarator.matches()) {
-                return functionPointerType(program, declarator, typeName.trim(),
-                        requireDefinitionName(typeName.trim(), definitionName, nameField));
+                return functionPointerType(program, declarator, typeName.trim());
             }
         }
         try {
@@ -538,37 +543,28 @@ public final class ToolHelpers {
         }
     }
 
-    /** The name the new definition takes, or the reason this call cannot supply one. */
-    private static String requireDefinitionName(String typeName, String definitionName,
-            String nameField) {
-        if (definitionName != null) {
-            return definitionName;
-        }
-        if (nameField == null) {
-            throw new IllegalArgumentException(
-                    "A callback type takes the name of the thing it is applied to, and this slot " +
-                    "has no name of its own. Apply '" + typeName + "' to a variable, parameter or " +
-                    "struct field first, then name that type here as '<that name> *'.");
-        }
-        throw new IllegalArgumentException(
-                "A callback type takes the name of the thing it is applied to, so '" + typeName +
-                "' needs one: pass '" + nameField + "' in the same call.");
-    }
-
     /**
-     * Builds the callback type a declarator describes, as a pointer to a named function
-     * definition — the shape a parameter, struct field or vtable slot actually holds.
+     * Builds the callback type a declarator describes, as a pointer to a function definition —
+     * the shape a parameter, struct field or vtable slot actually holds. Ghidra has no anonymous
+     * function definition, so applying a signature always creates one; the only question is what
+     * it is called.
      *
-     * <p>A name that is already taken is never redefined: every variable, field and call site
-     * already typed with that definition would change with it, silently, from a call that asked
-     * to type one thing. An equivalent definition under that name is reused instead, so applying
-     * the same declarator to the second and third site costs the caller nothing.
+     * <p>An unnamed declarator gets a name derived from its own signature. That makes the name a
+     * property of the signature and nothing else: the same declarator written at the second and
+     * third site finds the definition the first one made, and two different signatures can never
+     * want the same name.
+     *
+     * <p>A declarator that writes a name gets exactly that name, and is refused rather than
+     * redefined when the name is taken by something that is not the same signature: every site
+     * already typed with it would change with it, silently, from a call that asked to type one
+     * thing.
      */
     private static DataType functionPointerType(Program program, java.util.regex.Matcher declarator,
-            String typeName, String name) {
+            String typeName) {
         DataTypeManager dtm = program.getDataTypeManager();
-        FunctionDefinitionDataType definition =
-                new FunctionDefinitionDataType(CategoryPath.ROOT, name, dtm);
+        String requestedName = declarator.group(3);
+        FunctionDefinitionDataType definition = new FunctionDefinitionDataType(
+                CALLBACK_CATEGORY, requestedName != null ? requestedName : DERIVED_PREFIX, dtm);
         try {
             definition.setReturnType(findDataType(program, declarator.group(1)));
         } catch (IllegalArgumentException e) {
@@ -578,29 +574,157 @@ public final class ToolHelpers {
         if (convention != null) {
             setCallingConvention(program, definition, convention);
         }
-        definition.setArguments(parametersOf(program, declarator.group(3).trim(), typeName, definition));
+        definition.setArguments(parametersOf(program, declarator.group(4).trim(), typeName, definition));
 
-        List<DataType> taken = new ArrayList<>();
-        dtm.findDataTypes(name, taken);
+        if (requestedName != null) {
+            List<DataType> taken = typesNamed(dtm, requestedName);
+            DataType reusable = equivalentDefinition(taken, definition);
+            if (reusable != null) {
+                return new PointerDataType(reusable, dtm);
+            }
+            if (!taken.isEmpty()) {
+                throw new IllegalArgumentException(
+                        nameTakenMessage(typeName, requestedName, taken.get(0)));
+            }
+            return new PointerDataType(definition, dtm);
+        }
+
+        String derived = derivedName(definition);
+        for (int attempt = 1; attempt <= MAX_DERIVED_ATTEMPTS; attempt++) {
+            String candidateName = attempt == 1 ? derived : derived + "_" + attempt;
+            rename(definition, candidateName);
+            List<DataType> taken = typesNamed(dtm, candidateName);
+            DataType reusable = equivalentDefinition(taken, definition);
+            if (reusable != null) {
+                return new PointerDataType(reusable, dtm);
+            }
+            if (taken.isEmpty()) {
+                return new PointerDataType(definition, dtm);
+            }
+            // Something unrelated holds the derived name. The caller never wrote that name and
+            // cannot be asked about it, so step past it rather than failing on it.
+        }
+        throw new IllegalArgumentException(
+                "Cannot create the callback type for '" + typeName + "': this program already has " +
+                MAX_DERIVED_ATTEMPTS + " unrelated types named '" + derived + "', '" + derived +
+                "_2' and so on. Name the callback type yourself by writing the name where C puts " +
+                "it — '" + withName(typeName, "my_callback") + "'.");
+    }
+
+    /** Every type in the program's manager with this exact name, in any category. */
+    private static List<DataType> typesNamed(DataTypeManager dtm, String name) {
+        List<DataType> found = new ArrayList<>();
+        dtm.findDataTypes(name, found);
+        return found;
+    }
+
+    /** The stored definition {@code definition} may be replaced by, or null if there is none. */
+    private static DataType equivalentDefinition(List<DataType> taken,
+            FunctionDefinitionDataType definition) {
         for (DataType candidate : taken) {
             if (candidate instanceof FunctionDefinition && candidate.isEquivalent(definition)) {
-                return new PointerDataType(candidate, dtm);
+                return candidate;
             }
         }
-        if (!taken.isEmpty()) {
-            DataType existing = taken.get(0);
+        return null;
+    }
+
+    /** Renames a definition that is not yet stored; a definition's name is part of its identity. */
+    private static void rename(FunctionDefinitionDataType definition, String name) {
+        try {
+            definition.setName(name);
+        } catch (ghidra.util.InvalidNameException e) {
             throw new IllegalArgumentException(
-                    "Cannot create the callback type '" + name + "' from '" + typeName + "': that " +
-                    "name is already " +
-                    (existing instanceof FunctionDefinition already
-                            ? "a function definition with a different signature, "
-                              + already.getPrototypeString()
-                            : "a " + existing.getDisplayName() + " in this program") +
-                    ". Apply '" + name + " *' if that is the type you meant, or use a different " +
-                    "name — an existing definition is not redefined here, because every site " +
-                    "already typed with it would change with it.");
+                    "'" + name + "' cannot be used as a data type name: " + e.getMessage());
         }
-        return new PointerDataType(definition, dtm);
+    }
+
+    /**
+     * Explains a name written into a declarator that this program has already given to something
+     * else.
+     *
+     * <p>The name inside {@code (* ... )} is the one thing about a declarator that does not read
+     * as itself: it names a data type being created here, not the variable, field or parameter
+     * the call is typing, and it is checked against every type in the program rather than
+     * anything in the function at hand. So the message says which name it is talking about,
+     * what already holds it, and that dropping it entirely is a valid answer.
+     */
+    private static String nameTakenMessage(String typeName, String name, DataType existing) {
+        String preamble = "'" + name + "' in '" + typeName + "' names the callback data type this " +
+                "call would create — not the variable, parameter or field being typed — and this " +
+                "program already has ";
+        String orDropIt = "Either drop the name — '" + withName(typeName, "") + "' names the type " +
+                "after its own signature and never collides — or write a different one";
+        if (existing instanceof FunctionDefinition definition) {
+            return preamble + "a different function definition called '" + name + "': " +
+                    definition.getPrototypeString() + ". It is not redefined here, because every " +
+                    "site already typed with it would change with it. " + orDropIt +
+                    ", or apply '" + name + " *' if that existing definition is the type you meant.";
+        }
+        return preamble + "a " + kindOf(existing) + " called '" + name + "' at " +
+                existing.getDataTypePath().getPath() + ". " + orDropIt + ".";
+    }
+
+    /** What kind of thing a data type is, in the words the tool surface uses for it. */
+    private static String kindOf(DataType type) {
+        if (type instanceof ghidra.program.model.data.Structure) return "struct";
+        if (type instanceof ghidra.program.model.data.Union) return "union";
+        if (type instanceof ghidra.program.model.data.Enum) return "enum";
+        if (type instanceof ghidra.program.model.data.TypeDef) return "typedef";
+        if (type instanceof ghidra.program.model.data.Pointer) return "pointer type";
+        if (type instanceof ghidra.program.model.data.Array) return "array type";
+        return "data type";
+    }
+
+    /** The same declarator with {@code name} written where C puts it; {@code ""} removes it. */
+    private static String withName(String typeName, String name) {
+        java.util.regex.Matcher declarator = FUNCTION_POINTER.matcher(typeName);
+        if (!declarator.matches()) {
+            return typeName;
+        }
+        String convention = declarator.group(2) != null ? declarator.group(2) + " " : "";
+        return declarator.group(1).trim() + " (" + convention + "*" + name + ")("
+                + declarator.group(4).trim() + ")";
+    }
+
+    /**
+     * Names a definition after the signature it holds, so that name is reached again by anyone
+     * who writes the same signature and by nobody who writes a different one. Parameter names are
+     * left out because they are not part of what makes two definitions equivalent.
+     */
+    private static String derivedName(FunctionDefinitionDataType definition) {
+        StringBuilder name = new StringBuilder(DERIVED_PREFIX);
+        String convention = definition.getCallingConventionName();
+        if (convention != null && !CompilerSpec.CALLING_CONVENTION_unknown.equals(convention)) {
+            name.append(sanitize(convention)).append('_');
+        }
+        name.append(sanitize(definition.getReturnType().getDisplayName())).append("__");
+
+        List<String> parameters = new ArrayList<>();
+        for (ParameterDefinition parameter : definition.getArguments()) {
+            parameters.add(sanitize(parameter.getDataType().getDisplayName()));
+        }
+        if (definition.hasVarArgs()) {
+            parameters.add("varargs");
+        }
+        name.append(parameters.isEmpty() ? "void" : String.join("_", parameters));
+
+        // A long parameter list is cut short rather than spelled out. Two signatures cut to the
+        // same name are told apart by the equivalence check, which suffixes the second one.
+        if (name.length() <= MAX_DERIVED_NAME) {
+            return name.toString();
+        }
+        String cut = name.substring(0, MAX_DERIVED_NAME);
+        return cut.endsWith("_") ? cut.substring(0, cut.length() - 1) : cut;
+    }
+
+    /** A type's display name as a name-safe word: {@code void *} becomes {@code void_ptr}. */
+    private static String sanitize(String displayName) {
+        String word = displayName.replace("*", "_ptr").replaceAll("[^A-Za-z0-9_]", "_")
+                .replaceAll("_+", "_");
+        word = word.startsWith("_") ? word.substring(1) : word;
+        word = word.endsWith("_") ? word.substring(0, word.length() - 1) : word;
+        return word.isEmpty() ? "anon" : word;
     }
 
     /** Parses the declarator's parameter list; {@code (void)} and {@code ()} both mean none. */
@@ -630,8 +754,9 @@ public final class ToolHelpers {
             if (piece.indexOf('(') >= 0) {
                 throw new IllegalArgumentException(
                         "Parameter " + (i + 1) + " of '" + typeName + "' is itself a function " +
-                        "pointer ('" + piece + "'), which cannot be written inline. Apply that " +
-                        "type to a variable or struct field first, then name it here as 'that_name *'.");
+                        "pointer ('" + piece + "'), which cannot be written inline. Give that " +
+                        "callback its own name first — apply '" + withName(piece, "my_callback") +
+                        "' somewhere — then write it here as 'my_callback *'.");
             }
             parameters.add(parameterOf(program, piece, i + 1, typeName));
         }
