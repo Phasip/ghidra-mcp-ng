@@ -65,6 +65,7 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Set;
 
 import static com.ghidramcpng.tools.ToolHelpers.findDataType;
@@ -88,6 +89,9 @@ public class ReadTools {
     /** Default and ceiling for the xref tools' 'limit'; shared by both and by the batch dispatch. */
     private static final int DEFAULT_XREF_LIMIT = 500;
     private static final int MAX_XREF_LIMIT = 5000;
+
+    /** What a disassembly line states where the walk is in no function at all. */
+    private static final String OUTSIDE_ANY_FUNCTION = "(none)";
 
     private final ProgramManager mgr;
     private final RulesEngine rules;
@@ -467,7 +471,8 @@ public class ReadTools {
         @GET
         @Path("/read_data")
         @Operation(tags = "Symbols and memory", operationId = "read_data",
-            summary = "Read raw memory bytes from an address as fixed-size items.")
+            summary = "Read raw memory bytes from an address; an item_size of 2, 4 or 8 also "
+                    + "decodes each item to a value in the program's byte order.")
         @ApiResponse(responseCode = "200", description = "Raw data read result",
             content = @Content(schema = @Schema(implementation = ReadDataResponse.class)))
         public ReadDataResponse readData(
@@ -475,9 +480,9 @@ public class ReadTools {
             @QueryParam("program") String programName,
             @Parameter(description = "Start address in 0x-prefixed hex, e.g. 0x00401000.", required = true)
             @QueryParam("address") String addressText,
-            @Parameter(description = "Byte width of each item to read. Must be >= 1.")
+            @Parameter(description = "Byte width of each item. Must be >= 1; 2, 4 or 8 also fills 'values'.")
             @QueryParam("item_size") @DefaultValue("1") int itemSize,
-            @Parameter(description = "Number of items to read. Must be >= 1.")
+            @Parameter(description = "Number of items to read. Must be >= 1; item_size * item_count is capped at 65536 bytes.")
             @QueryParam("item_count") @DefaultValue("16") int itemCount) {
         Program program = openProgram(programName);
         Address start = toAddress(program, requireText(addressText, "address"));
@@ -501,14 +506,10 @@ public class ReadTools {
                 ". Ensure the range is mapped and initialized in program memory.");
         }
 
-        List<ReadDataItem> items = new ArrayList<>();
-        for (int i = 0; i < validatedItemCount; i++) {
-            int begin = i * validatedItemSize;
-            int end = begin + validatedItemSize;
-            byte[] chunk = java.util.Arrays.copyOfRange(bytes, begin, end);
-            Address itemAddress = start.add(begin);
-            items.add(new ReadDataItem(itemAddress, bytesToHex(chunk), bytesToAscii(chunk)));
-        }
+        // Only the decoded values are worth returning per item: an item's address and its bytes
+        // are already in start_address and hex, and repeating them there costs ~15x the response
+        // for nothing. Sizes the machine has no scalar for are left to the caller to read off hex.
+        List<String> values = decodeItems(program, bytes, validatedItemSize, validatedItemCount);
 
         return new ReadDataResponse(
             start,
@@ -517,7 +518,7 @@ public class ReadTools {
             totalBytes,
             bytesToHex(bytes),
             bytesToAscii(bytes),
-            items);
+            values);
         }
 
         @GET
@@ -550,14 +551,27 @@ public class ReadTools {
         rules.noteBudgetedRead("get_disassembly");
 
         List<DisassemblyLine> lines = new ArrayList<>();
+        // function_name marks where the walk enters a function, so it is carried only when it
+        // changes: repeating one name on every line of a long function says nothing the first
+        // line did not, and on a full-limit window that repetition is most of the response.
+        String previousFunction = null;
+        boolean first = true;
         while (current != null && lines.size() < validatedLimit) {
             Function containing = program.getFunctionManager().getFunctionContaining(current.getAddress());
+            String functionName = containing != null ? containing.getName() : null;
+            // Leaving every function is itself a change and has to be said: carrying the previous
+            // name through padding or data would attribute those bytes to a function they are
+            // not in, which is worse than the repetition this avoids.
+            boolean changed = first || !Objects.equals(functionName, previousFunction);
+            String stated = functionName != null ? functionName : OUTSIDE_ANY_FUNCTION;
             lines.add(new DisassemblyLine(
                 current.getAddress(),
                 bytesToHex(safeInstructionBytes(current)),
                 current.getMnemonicString(),
                 formatOperands(current),
-                containing != null ? containing.getName() : null));
+                changed ? stated : null));
+            previousFunction = functionName;
+            first = false;
             current = current.getNext();
         }
 
@@ -1186,6 +1200,30 @@ public class ReadTools {
         return sb.toString();
     }
 
+    /**
+     * Decodes each item to a 0x-hex scalar in the program's byte order, or null when the width has
+     * no scalar reading. Size 1 is excluded on purpose: a byte's value is its hex pair, so decoding
+     * it would only restate {@code hex} — the duplication this list exists to avoid. This is the
+     * one thing a caller cannot recover from {@code hex} itself, on a little-endian program above all.
+     */
+    private static List<String> decodeItems(Program program, byte[] bytes, int itemSize, int itemCount) {
+        if (itemSize != 2 && itemSize != 4 && itemSize != 8) {
+            return null;
+        }
+        boolean bigEndian = program.getMemory().isBigEndian();
+        List<String> values = new ArrayList<>(itemCount);
+        for (int i = 0; i < itemCount; i++) {
+            int begin = i * itemSize;
+            long value = 0;
+            for (int b = 0; b < itemSize; b++) {
+                int shift = 8 * (bigEndian ? itemSize - 1 - b : b);
+                value |= (long) (bytes[begin + b] & 0xFF) << shift;
+            }
+            values.add(String.format("0x%0" + (itemSize * 2) + "X", value));
+        }
+        return values;
+    }
+
     private static String bytesToAscii(byte[] bytes) {
         StringBuilder sb = new StringBuilder(bytes.length);
         for (byte b : bytes) {
@@ -1764,19 +1802,14 @@ public class ReadTools {
             Address start_address,
             int item_size,
             int item_count,
-            int bytes_read,
-            @Schema(description = "Full read bytes as uppercase hex pairs separated by spaces.")
+            @Schema(description = "Bytes read; always item_size * item_count, since a short read is an error.")
+            int byte_count,
+            @Schema(description = "Full read bytes as uppercase hex pairs separated by spaces, in memory order from 'start_address'.")
             String hex,
             @Schema(description = "ASCII preview where non-printable bytes are shown as '.'.")
             String ascii,
-            List<ReadDataItem> items) {
-        }
-
-        public record ReadDataItem(
-            @Schema(type = "string", description = "Address of this item in 0x-prefixed hex.")
-            Address address,
-            String hex,
-            String ascii) {
+            @Schema(description = "Each item decoded to a 0x-hex scalar in the program's byte order; null unless item_size is 2, 4 or 8.")
+            List<String> values) {
         }
 
         public record GetDisassemblyResponse(
@@ -1797,6 +1830,7 @@ public class ReadTools {
             String bytes,
             String mnemonic,
             String operands,
+            @Schema(description = "Function containing this instruction, stated on the first line and then only where it changes: a name, or '(none)' where the walk is in no function. Null means the last stated value still holds.")
             String function_name) {
         }
 
@@ -1830,53 +1864,23 @@ public class ReadTools {
             List<StructField> fields) {
     }
 
+        /**
+         * One list, not one per category: the categories were a second copy of every entry — twice
+         * the response for no new fact — and {@code ref_types} already selects a category at the
+         * source, where the unwanted entries cost nothing at all.
+         */
         public record XrefsResponse(
             List<XrefEntry> xrefs,
             @Schema(description = "Number of cross-references in this response, not the total in the program.")
             int count,
             @Schema(description = "True when 'limit' was reached and further matching cross-references were not returned.")
             boolean truncated,
-            List<XrefEntry> call_refs,
-            List<XrefEntry> computed_call_refs,
-            List<XrefEntry> data_refs,
-            List<XrefEntry> read_refs,
-            List<XrefEntry> write_refs,
-            List<XrefEntry> other_refs,
             @Schema(description = "Inferred indirect-call candidates. Derived from the full reference set, so this list is not subject to 'limit'.")
             List<IndirectCallerEntry> indirect_calls) {
 
         public static XrefsResponse fromEntries(List<XrefEntry> xrefs, boolean truncated,
                 List<IndirectCallerEntry> indirectCalls) {
-            List<XrefEntry> callRefs = new ArrayList<>();
-            List<XrefEntry> computedCallRefs = new ArrayList<>();
-            List<XrefEntry> dataRefs = new ArrayList<>();
-            List<XrefEntry> readRefs = new ArrayList<>();
-            List<XrefEntry> writeRefs = new ArrayList<>();
-            List<XrefEntry> otherRefs = new ArrayList<>();
-
-            for (XrefEntry xref : xrefs) {
-            String category = classifyReferenceType(xref.ref_type().toUpperCase(Locale.ROOT));
-            switch (category) {
-                case "CALL" -> callRefs.add(xref);
-                case "COMPUTED_CALL" -> computedCallRefs.add(xref);
-                case "DATA" -> dataRefs.add(xref);
-                case "READ" -> readRefs.add(xref);
-                case "WRITE" -> writeRefs.add(xref);
-                default -> otherRefs.add(xref);
-            }
-            }
-
-            return new XrefsResponse(
-                xrefs,
-                xrefs.size(),
-                truncated,
-                callRefs,
-                computedCallRefs,
-                dataRefs,
-                readRefs,
-                writeRefs,
-                otherRefs,
-                indirectCalls);
+            return new XrefsResponse(xrefs, xrefs.size(), truncated, indirectCalls);
         }
         }
 

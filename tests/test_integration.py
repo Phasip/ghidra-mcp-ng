@@ -55,8 +55,15 @@ def _referenced_code_address(client: GhidraClient, prog: str) -> str | None:
         lines = client.ok(
             "get_disassembly", {"program": prog, "name_or_address": fn, "limit": 100}
         )["lines"]
-        # Skip the entry point: it carries a real function symbol, not a dynamic label.
-        body = [line["address"] for line in lines if line["function_name"] == fn][1:]
+        # function_name is carried only where the walk changes function, so track the name in
+        # force. Skip the entry point: it carries a real function symbol, not a dynamic label.
+        body = []
+        current = None
+        for line in lines:
+            current = line.get("function_name") or current
+            if current == fn:
+                body.append(line["address"])
+        body = body[1:]
         if not body:
             continue
         batch = client.ok(
@@ -503,6 +510,30 @@ class TestDecompilation:
         assert result["count"] > 0
         assert len(result["lines"]) == result["count"]
 
+    def test_get_disassembly_names_its_function_once(
+            self, ghidra_server: GhidraClient, prog: str):
+        # The name is stated on the first line and then only where the walk changes function,
+        # so a window inside one function must not repeat it on every line.
+        result = ghidra_server.ok(
+            "get_disassembly",
+            {"program": prog, "name_or_address": "add", "limit": 5},
+        )
+        lines = result["lines"]
+        assert lines[0]["function_name"] == "add"
+        assert [line.get("function_name") for line in lines[1:]] == [None] * (len(lines) - 1)
+
+    def test_get_disassembly_names_the_next_function_it_enters(
+            self, ghidra_server: GhidraClient, prog: str):
+        # Walking off the end of a function must announce the one it lands in.
+        result = ghidra_server.ok(
+            "get_disassembly",
+            {"program": prog, "name_or_address": "add", "limit": 200},
+        )
+        named = [line["function_name"] for line in result["lines"] if line.get("function_name")]
+        assert named[0] == "add"
+        # A name is only ever carried where it changes, so no two in a row can be equal.
+        assert all(a != b for a, b in zip(named, named[1:])), named
+
     def test_get_disassembly_reports_truncation(self, ghidra_server: GhidraClient, prog: str):
         addr = _func_address(ghidra_server, prog, "add")
         # A single-instruction window into a larger function must flag more remain.
@@ -546,14 +577,41 @@ class TestDecompilation:
         assert "count" in resp["error"]
         assert "item_count" in resp["error"]
 
-    def test_read_data_returns_items(self, ghidra_server: GhidraClient, prog: str):
+    def test_read_data_returns_one_dump_of_the_bytes(
+            self, ghidra_server: GhidraClient, prog: str):
         addr = _func_address(ghidra_server, prog, "add")
         result = ghidra_server.ok(
             "read_data",
             {"program": prog, "address": _hex(addr), "item_size": 1, "item_count": 8},
         )
-        assert result["bytes_read"] == 8
-        assert len(result["items"]) == 8
+        assert result["byte_count"] == 8
+        assert len(result["hex"].split()) == 8
+        assert len(result["ascii"]) == 8
+        # A byte's value is its hex pair, so item_size 1 must not restate the dump.
+        assert result.get("values") is None
+
+    def test_read_data_decodes_word_items_in_program_byte_order(
+            self, ghidra_server: GhidraClient, prog: str):
+        addr = _func_address(ghidra_server, prog, "add")
+        result = ghidra_server.ok(
+            "read_data",
+            {"program": prog, "address": _hex(addr), "item_size": 4, "item_count": 2},
+        )
+        assert result["byte_count"] == 8
+        assert len(result["values"]) == 2
+        first = result["hex"].split()[:4]
+        # x86-64 fixtures are little-endian: the first item reads back byte-reversed.
+        assert result["values"][0] == "0x" + "".join(reversed(first))
+
+    def test_read_data_rejects_unreadable_item_size(
+            self, ghidra_server: GhidraClient, prog: str):
+        addr = _func_address(ghidra_server, prog, "add")
+        resp = ghidra_server.call(
+            "read_data",
+            {"program": prog, "address": _hex(addr), "item_size": 0, "item_count": 8},
+        )
+        assert resp["ok"] is False
+        assert "item_size" in resp["error"]
 
     def test_search_instructions_finds_common_call_opcode(self, ghidra_server: GhidraClient, prog: str):
         result = ghidra_server.ok(
@@ -621,7 +679,11 @@ class TestXrefs:
             "get_xrefs_to",
             {"program": prog, "name_or_address": _hex(addr), "ref_types": ["CALL"]},
         )
-        assert "call_refs" in result
+        # The filter is the only categorisation: what comes back is calls and nothing else,
+        # returned once, in 'xrefs'.
+        assert result["count"] >= 1
+        assert all("CALL" in x["ref_type"].upper() for x in result["xrefs"]), result["xrefs"]
+        assert not [k for k in result if k.endswith("_refs")], sorted(result)
 
     def test_get_xrefs_to_limit_truncates(self, ghidra_server: GhidraClient, prog: str):
         # add() is called from at least two sites, so a limit of 1 must drop one and say so.

@@ -485,7 +485,7 @@ List all imported external symbols in a program. Returns all imports; no paginat
 
 ### `read_data`
 
-Read raw memory bytes from an address as fixed-size items.
+Read raw memory bytes from an address; an item_size of 2, 4 or 8 also decodes each item to a value in the program's byte order.
 
 *Reads only.*
 
@@ -493,8 +493,8 @@ Read raw memory bytes from an address as fixed-size items.
 |-----------|------|:--------:|---------|-------------|
 | `program` | string | yes |  | Program name; see list_project_files. |
 | `address` | string | yes |  | Start address in 0x-prefixed hex, e.g. 0x00401000. |
-| `item_size` | integer (int32) |  | 1 | Byte width of each item to read. Must be >= 1. |
-| `item_count` | integer (int32) |  | 16 | Number of items to read. Must be >= 1. |
+| `item_size` | integer (int32) |  | 1 | Byte width of each item. Must be >= 1; 2, 4 or 8 also fills 'values'. |
+| `item_count` | integer (int32) |  | 16 | Number of items to read. Must be >= 1; item_size * item_count is capped at 65536 bytes. |
 
 ### `search_bytes`
 
