@@ -11,7 +11,8 @@ A Ghidra extension that exposes reverse-engineering operations as an MCP (Model 
 ## Features
 
 - Tools covering function analysis, decompilation, cross-references, data types, structs, comments, and managed scripting
-- Configurable naming-convention enforcement, comment constraints, a read budget and operation timeouts via `rules.yaml` — the server rejects names that do not follow your conventions, caps how far reading runs ahead of what has been written down, and makes decompilation timeout behavior explicit
+- `rules.yaml` — an optional server-side policy file that holds the agent to your conventions: it rejects names that do not match your patterns, constrains comments so prose cannot stand in for names and types, and sets decompilation timeouts. It ships as a working example you can edit, and the server runs without it
+- `REVERSING.md` — the reversing methodology the naming conventions come from, written to be handed to the agent
 - Write operations run inside Ghidra transactions and are auto-saved
 - HTTP REST API — one Ghidra instance can serve multiple AI agents simultaneously
 - Minimal Python MCP bridge (`bridge.py`) — stdlib only, no extra dependencies
@@ -83,6 +84,14 @@ over stdio and forwards everything to the Ghidra HTTP API.
 
 Each agent gets its own `bridge.py` process — they all talk to the same Ghidra instance.
 
+Give the agent **[REVERSING.md](REVERSING.md)** alongside the tools. The tool schemas say what
+each call does; that document says what to do with them — when to name rather than comment, what
+the `maybe_`/`likely_`/`guess_` prefixes mean, why a finding that is not a name or a type is lost
+at the end of the session. It is the reasoning half of the same surface `rules.yaml` enforces, and
+an agent that has not read it discovers those conventions by having writes rejected. In Claude
+Code, the natural home is a skill that points at it; any client with a system prompt or project
+instructions works as well.
+
 Example `mcp-config.json`:
 
 ```json
@@ -133,11 +142,20 @@ own message with nothing prefixed to it.
 
 ## Server config (`rules.yaml`)
 
-Write tools validate proposed names against `rules.yaml` before touching the program. The same file also controls server timeouts for long-running operations. A violation returns `{"isError":true}` with the configured message — no partial writes occur.
+`rules.yaml` is where you write down what a good annotation looks like on your projects, so the
+server can hold the agent to it instead of you doing it in review. It is **optional** — pass it
+with `--rules`, omit it and every rule below is simply off — and the copy in this repository is a
+working example rather than a required config, meant to be edited or replaced.
 
-The naming conventions the shipped `rules.yaml` enforces — the `maybe_`/`likely_`/`guess_`
-prefixes and the struct-field offset suffix — are defined in **[REVERSING.md](REVERSING.md)**,
-along with the methodology they come from.
+It governs four things: the **names** write tools will accept, the **comments** `set_comment` will
+accept, an opt-in **read budget** that caps how far reading may run ahead of what has been written
+down, and **timeouts** for long-running operations. Rules are checked before the program is
+touched: a violation returns `{"isError":true}` with the configured message and writes nothing.
+
+The conventions the shipped file enforces — the `maybe_`/`likely_`/`guess_` prefixes and the
+struct-field offset suffix — are not arbitrary. They come from the methodology in
+**[REVERSING.md](REVERSING.md)**, which is written for the agent to read: give it that document
+and the rules stop being obstacles it has to discover by failing.
 
 Timeout settings:
 
@@ -202,15 +220,18 @@ subject to `max_length` alone. Clearing a comment is always allowed.
 
 ### Read budget
 
-An optional `reads:` section caps how far reading may run ahead of the record. Same gradient as
-above, one step earlier: reading is one cheap call that always succeeds, writing is N validated
-calls that can fail, and an agent that follows it decompiles thirty functions, understands the
+An optional `reads:` section caps how far reading may run ahead of the record. **It ships
+disabled** (`max_without_write: 0`) and is the one rule worth leaving off until you have watched
+an agent work on your own targets — unlike the others it can fire on a call chain that genuinely
+had to be followed before anything was worth naming. Same gradient as above, one step earlier:
+reading is one cheap call that always succeeds, writing is N validated calls that can fail, and
+an agent that follows it decompiles thirty functions, understands the
 binary perfectly in its own context, writes none of it down, and leaves the next session opening
 the project to `FUN_00401000` again.
 
 ```yaml
 reads:
-  max_without_write: 10   # reads allowed between writes; 0 (default) disables the rule
+  max_without_write: 0    # reads allowed between writes; 0 (the shipped value) disables the rule
   allow_ignore: true      # true = advisory (resets as it fires); false = forces a write
   message: "Persist what you already worked out before reading further."
 ```
@@ -219,7 +240,8 @@ reads:
 replaces the built-in diagnostic rather than decorating it. Say everything the agent needs,
 including what to do next. Omit the key to fall back to the built-in text, which states the
 limit, names `reads.max_without_write`, and lists the tools that clear it. The shipped
-`rules.yaml` carries a complete message you can edit or delete.
+`rules.yaml` carries a complete message and a tuned example, both inert until you raise
+`max_without_write` above zero.
 
 Only `decompile_function` and `get_disassembly` are counted — those are where a function's
 contents arrive and a finding is made. Searches, xrefs and listings are navigation, and charging
