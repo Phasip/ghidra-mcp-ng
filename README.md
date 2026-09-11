@@ -135,6 +135,10 @@ own message with nothing prefixed to it.
 
 Write tools validate proposed names against `rules.yaml` before touching the program. The same file also controls server timeouts for long-running operations. A violation returns `{"isError":true}` with the configured message — no partial writes occur.
 
+The naming conventions the shipped `rules.yaml` enforces — the `maybe_`/`likely_`/`guess_`
+prefixes and the struct-field offset suffix — are defined in **[REVERSING.md](REVERSING.md)**,
+along with the methodology they come from.
+
 Timeout settings:
 
 ```yaml
@@ -371,6 +375,7 @@ ghidra-mcp-ng/
 │       ├── mcp/McpToolHintsTest.java     # Guards the behaviour-hint tables against drift
 │       ├── rules/RulesEngineTest.java    # Naming-rule mechanics
 │       └── tools/ToolResourceIntegrationTest.java   # Every route against a real program
+├── REVERSING.md                          # Reversing methodology handed to the agent
 └── tests/
     ├── conftest.py                       # pytest fixtures (live server per worker)
     ├── test_bridge.py                    # bridge.py, offline

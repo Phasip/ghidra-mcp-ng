@@ -111,6 +111,8 @@ bridge.py                  stdlib-only MCP↔HTTP bridge (no deps). Owns the pro
                            annotations, input schemas, result rendering).
 start.py, build_and_install.py   Launch / build+install helpers.
 rules.yaml                 Naming-convention + timeout config (optional at runtime).
+REVERSING.md               Agent-facing reversing methodology; defines the naming conventions
+                           rules.yaml enforces. Hand-written — keep it generic, no target specifics.
 TOOLS.md                   GENERATED tool reference — do not hand-edit; regenerate from the spec.
 tests/                     Python: conftest.py (live-server fixture), test_integration.py (live),
                            test_bridge.py (offline). src/test/java: ToolResourceIntegrationTest,
