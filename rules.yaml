@@ -63,8 +63,15 @@ import:
 # The count is server-wide, not per program: it describes the agent's habit, and an agent
 # alternating between two programs has still written nothing down.
 #
+# This is OFF in the shipped file, and should stay off until you have watched an agent work on
+# your own targets. A budget is a blunt instrument: it cannot tell reading that runs ahead of the
+# record from reading a call chain that genuinely has to be followed before anything is worth
+# naming, and set too tight it interrupts the second as often as the first. Turn it on when you
+# have seen an agent leave findings unwritten, and set the number from what you saw.
+#
 # Keys:
-#   max_without_write:  reads allowed between writes. 0 (default) disables the rule.
+#   max_without_write:  reads allowed between writes. 0 (the default, and what ships here)
+#                       disables the rule entirely.
 #   allow_ignore:       what happens once the budget is spent.
 #                         true  — advisory. The budget resets as the error is raised, so
 #                                 repeating the call succeeds and the error returns one budget
@@ -76,7 +83,8 @@ import:
 #                       built-in text.
 
 reads:
-  max_without_write: 10
+  # Set to a positive number to enable; 10 is a reasonable starting point if you do.
+  max_without_write: 0
   allow_ignore: true
   message: >
     Read budget exhausted: too many functions decompiled or disassembled since the last write
