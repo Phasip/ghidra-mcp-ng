@@ -130,7 +130,17 @@ public class GhidraMcpServer implements GhidraLaunchable {
 
         // Script support: acquireBundleHostReference() initialises the OSGi BundleHost
         // (null until called), required for Java script execution.
+        //
+        // Ensure the user scripts directory exists BEFORE acquiring the bundle host.
+        // If it does not, BundleHost.createGhidraBundle() creates a
+        // GhidraPlaceholderBundle for it.  Later, JavaScriptProvider.getBundleForSource()
+        // unconditionally casts the bundle to GhidraSourceBundle, which throws a
+        // ClassCastException on the placeholder.  Creating the directory up-front makes
+        // the factory produce a proper GhidraSourceBundle instead.
         System.err.println("[ghidra-mcp-ng] Initialising script support ...");
+        java.nio.file.Path userScriptsDir =
+                java.nio.file.Path.of(GhidraScriptUtil.USER_SCRIPTS_DIR);
+        java.nio.file.Files.createDirectories(userScriptsDir);
         GhidraScriptUtil.acquireBundleHostReference();
 
         // Open project

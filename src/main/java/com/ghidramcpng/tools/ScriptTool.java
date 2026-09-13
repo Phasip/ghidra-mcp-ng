@@ -499,6 +499,12 @@ public class ScriptTool {
     }
 
     private <T> T withScriptRuntime(ThrowingSupplier<T> action) throws Exception {
+        // Defensive: ensure the user scripts directory exists before the first
+        // acquireBundleHostReference() call.  Without this, BundleHost may create a
+        // GhidraPlaceholderBundle, and JavaScriptProvider.getBundleForSource() will
+        // ClassCastException when it unconditionally casts to GhidraSourceBundle.
+        java.nio.file.Files.createDirectories(
+                java.nio.file.Path.of(GhidraScriptUtil.USER_SCRIPTS_DIR));
         GhidraScriptUtil.acquireBundleHostReference();
         try {
             return action.get();
