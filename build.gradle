@@ -26,6 +26,7 @@ buildExtension {
     exclude '__pycache__/**'
     exclude 'tests/**'
     exclude 'scripts/**'
+    exclude 'opencode.json'
 }
 
 repositories {

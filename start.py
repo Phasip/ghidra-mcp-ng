@@ -179,7 +179,7 @@ def main() -> None:
         raise SystemExit(
             f"Cannot find {launch_sh}. Is --ghidra pointing at a Ghidra install?"
         )
-    if not project_path.exists():
+    if not project_path.exists() and not (project_path.parent / (project_path.name + ".gpr")).exists():
         raise SystemExit(f"Project directory does not exist: {project_path}")
 
     if args.install_ext:
